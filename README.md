@@ -1,5 +1,7 @@
 # skills-manager
 
+[![CI](https://github.com/mamoreau-devolutions/skills-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/mamoreau-devolutions/skills-manager/actions/workflows/ci.yml)
+
 Native, single-executable ports of [`skills`](https://github.com/vercel-labs/skills),
 the CLI for the open agent skills ecosystem. `skills` installs and manages agent
 skills (folders with a `SKILL.md`) for Claude Code, Codex, Cursor, GitHub Copilot
@@ -96,6 +98,11 @@ and [`dotnet/PARITY.md`](dotnet/PARITY.md).
 - Lockstep: `parity.ps1 -Lockstep` runs every case, extensions included, with
   the Rust port on one side and the C# port on the other. It needs both builds
   but not the reference CLI.
+- CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of the
+  above on Windows, Linux and macOS for every pull request: formatting, clippy,
+  unit tests, a NativeAOT publish, the lockstep comparison, and both ports
+  against the reference CLI at v1.7.0. A nightly run adds the network cases
+  (pass `-PassGitHubToken` to use `GITHUB_TOKEN`/`GH_TOKEN` there).
 
 ```bash
 git clone https://github.com/vercel-labs/skills ../skills

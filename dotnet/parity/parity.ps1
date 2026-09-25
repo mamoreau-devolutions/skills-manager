@@ -25,6 +25,7 @@ param(
     [string]$Bin,
     [switch]$ShowOutput,
     [switch]$Keep,
+    [switch]$PassGitHubToken,
     [int]$TimeoutSec = 180
 )
 

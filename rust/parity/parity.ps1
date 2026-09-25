@@ -53,6 +53,9 @@ param(
     [switch]$ShowOutput,
     # Keep the sandbox directories for inspection.
     [switch]$Keep,
+    # Pass GITHUB_TOKEN / GH_TOKEN into the sandboxes (network cases in CI hit
+    # the anonymous GitHub API rate limit otherwise). Both sides get the same token.
+    [switch]$PassGitHubToken,
     [int]$TimeoutSec = 180
 )
 
@@ -626,6 +629,12 @@ function Get-CleanEnv($sb) {
     $vars.TMPDIR = $sb.tmp
     $vars.DISABLE_TELEMETRY = '1'
     $vars.GIT_CONFIG_NOSYSTEM = '1'
+    if ($PassGitHubToken) {
+        foreach ($k in 'GITHUB_TOKEN', 'GH_TOKEN') {
+            $v = [Environment]::GetEnvironmentVariable($k)
+            if ($v) { $vars[$k] = $v }
+        }
+    }
     $vars
 }
 
