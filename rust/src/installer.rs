@@ -455,7 +455,7 @@ fn cp_dereference(src: &str, dest: &str, files: &mut Vec<(String, String)>) -> s
     let meta = std::fs::metadata(src)?;
     if meta.is_dir() {
         std::fs::create_dir_all(dest)?;
-        for e in std::fs::read_dir(src)? {
+        for e in crate::sys::read_dir(src)? {
             let e = e?;
             let name = e.file_name().to_string_lossy().to_string();
             cp_dereference(
@@ -486,7 +486,7 @@ fn collect_directory(
     files: &mut Vec<(String, String)>,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
-    for entry in std::fs::read_dir(src)? {
+    for entry in crate::sys::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
         let ft = entry.file_type()?;
@@ -1029,7 +1029,7 @@ pub fn list_installed_skills(
 
     let whitespace_re = regex::Regex::new(r"\s+").unwrap();
     for scope in &scopes {
-        let Ok(entries) = std::fs::read_dir(&scope.path) else {
+        let Ok(entries) = crate::sys::read_dir(&scope.path) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -1093,7 +1093,7 @@ pub fn list_installed_skills(
                     is_path_safe(&agent_base, &d) && exists(&d)
                 });
                 if !found {
-                    if let Ok(agent_entries) = std::fs::read_dir(&agent_base) {
+                    if let Ok(agent_entries) = crate::sys::read_dir(&agent_base) {
                         for ae in agent_entries.flatten() {
                             let cand = join(&[
                                 agent_base.as_str(),

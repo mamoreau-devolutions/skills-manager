@@ -321,7 +321,7 @@ fn write_safe_file(dir: &str, rel: &str, contents: &[u8]) -> std::io::Result<()>
 
 fn copy_skill_directory(src: &str, dest: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
-    for e in std::fs::read_dir(src)? {
+    for e in crate::sys::read_dir(src)? {
         let e = e?;
         let name = e.file_name().to_string_lossy().to_string();
         let ft = e.file_type()?;
@@ -356,7 +356,7 @@ fn copy_skill_directory(src: &str, dest: &str) -> std::io::Result<()> {
 }
 
 fn contains_supporting_files(root: &str, current: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(current) else {
+    let Ok(entries) = crate::sys::read_dir(current) else {
         return false;
     };
     for e in entries.flatten() {

@@ -711,7 +711,7 @@ pub fn eve_subagents_dir() -> String {
 /// Names of Eve subagent directories under `agent/subagents/`, sorted.
 pub fn get_eve_subagents(cwd: &str) -> Vec<String> {
     let dir = join(&[cwd, eve_subagents_dir().as_str()]);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    let Ok(entries) = crate::sys::read_dir(&dir) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries

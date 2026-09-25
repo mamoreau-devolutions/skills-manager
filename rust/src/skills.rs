@@ -199,7 +199,7 @@ fn find_skill_dirs(dir: &str, depth: usize, max_depth: usize) -> Vec<String> {
     if has_skill_md(dir) {
         out.push(dir.to_string());
     }
-    if let Ok(entries) = std::fs::read_dir(dir) {
+    if let Ok(entries) = crate::sys::read_dir(dir) {
         for entry in entries.flatten() {
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             let name = entry.file_name().to_string_lossy().to_string();
@@ -298,7 +298,7 @@ impl<'a> Discovery<'a> {
     }
 
     fn walk(&mut self, dir: &str, max_depth: usize, depth: usize) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(entries) = crate::sys::read_dir(dir) else {
             return;
         };
         let entries: Vec<_> = entries.flatten().collect();

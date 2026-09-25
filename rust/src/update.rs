@@ -88,7 +88,7 @@ pub fn has_project_skills(cwd: Option<&str>) -> bool {
         return true;
     }
     let skills_dir = join(&[dir.as_str(), ".agents", "skills"]);
-    if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+    if let Ok(entries) = crate::sys::read_dir(&skills_dir) {
         for e in entries.flatten() {
             if e.file_type().map(|t| t.is_dir()).unwrap_or(false)
                 && std::path::Path::new(&join(&[

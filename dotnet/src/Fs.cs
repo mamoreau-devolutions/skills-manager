@@ -24,8 +24,8 @@ internal static partial class Fs
         }
     }
 
-    /// `fs.readdir(dir, { withFileTypes: true })` in OS order. Throws when the
-    /// directory cannot be read.
+    /// `fs.readdir(dir, { withFileTypes: true })`. Throws when the directory
+    /// cannot be read.
     public static List<DirEntry> ReadDir(string dir)
     {
         var result = new List<DirEntry>();
@@ -34,8 +34,20 @@ internal static partial class Fs
             var link = IsLink(info);
             result.Add(new DirEntry(info.Name, NodePath.Join(dir, info.Name), !link && info is DirectoryInfo, !link && info is FileInfo, link));
         }
+        if (!OperatingSystem.IsWindows()) result.Sort((a, b) => CompareNames(a.Name, b.Name));
         return result;
     }
+
+    /// Node's readdir order: libuv sorts scandir results with strcmp on Unix
+    /// (byte order of the UTF-8 names), while on Windows it returns the file
+    /// system's order, which is what .NET enumerates. Sorts in place on Unix.
+    public static void SortNamesLikeReaddir(List<string> names)
+    {
+        if (!OperatingSystem.IsWindows()) names.Sort(CompareNames);
+    }
+
+    private static int CompareNames(string a, string b) =>
+        Encoding.UTF8.GetBytes(a).AsSpan().SequenceCompareTo(Encoding.UTF8.GetBytes(b));
 
     /// ReadDir, or an empty list when the directory is missing/unreadable.
     public static List<DirEntry> TryReadDir(string dir)

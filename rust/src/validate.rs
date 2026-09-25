@@ -640,7 +640,7 @@ pub fn discover_skill_files(root: &str) -> Vec<String> {
         if depth >= MAX_DISCOVERY_DEPTH {
             return;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(entries) = crate::sys::read_dir(dir) else {
             return;
         };
         for e in entries.flatten() {
@@ -679,7 +679,7 @@ fn install_dir_candidates() -> Vec<&'static str> {
 }
 
 fn contains_installed_skill(dir: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::sys::read_dir(dir) else {
         return false;
     };
     entries.flatten().any(|e| {

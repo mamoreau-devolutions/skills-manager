@@ -181,7 +181,7 @@ pub fn scan_gh_skills(global: bool, locked: &Map<String, Value>) -> Vec<GhSkill>
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::new();
     for root in scan_roots(global) {
-        let Ok(entries) = std::fs::read_dir(&root) else {
+        let Ok(entries) = crate::sys::read_dir(&root) else {
             continue;
         };
         let mut names: Vec<String> = entries

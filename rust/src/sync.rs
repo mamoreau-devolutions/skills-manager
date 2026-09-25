@@ -43,7 +43,7 @@ fn is_dir(p: &str) -> bool {
 
 fn list_names(dir: &str) -> Option<Vec<String>> {
     Some(
-        std::fs::read_dir(dir)
+        crate::sys::read_dir(dir)
             .ok()?
             .flatten()
             .map(|e| e.file_name().to_string_lossy().to_string())

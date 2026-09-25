@@ -138,7 +138,7 @@ pub fn sort_files(files: &mut [PreviewFile]) {
 /// All regular files under `dir`, recursively, in [`sort_files`] order.
 pub fn list_files(dir: &str) -> Vec<PreviewFile> {
     fn walk(dir: &str, prefix: &str, out: &mut Vec<PreviewFile>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(entries) = crate::sys::read_dir(dir) else {
             return;
         };
         for e in entries.flatten() {

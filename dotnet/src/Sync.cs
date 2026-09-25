@@ -25,7 +25,9 @@ internal static class SyncCommand
     {
         try
         {
-            return new DirectoryInfo(dir).EnumerateFileSystemInfos().Select(i => i.Name).ToList();
+            var names = new DirectoryInfo(dir).EnumerateFileSystemInfos().Select(i => i.Name).ToList();
+            Fs.SortNamesLikeReaddir(names);
+            return names;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
