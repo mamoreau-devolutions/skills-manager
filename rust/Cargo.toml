@@ -1,0 +1,45 @@
+[package]
+name = "skills"
+version = "1.7.0"
+edition = "2021"
+description = "The open agent skills ecosystem (Rust port of the skills CLI)"
+license = "MIT"
+repository = "https://github.com/vercel-labs/skills"
+publish = false
+
+[features]
+# HTTPS support (rustls). Only disable it to type-check for targets without a C
+# cross-compiler, e.g. `cargo check --target x86_64-unknown-linux-gnu --no-default-features`.
+default = ["tls"]
+tls = ["ureq/tls"]
+
+[[bin]]
+name = "skills"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+crc32fast = "1"
+crossterm = "0.28"
+flate2 = "1"
+hex = "0.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+tar = "0.4"
+ureq = { version = "2", default-features = false, features = ["gzip"] }
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+junction = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
