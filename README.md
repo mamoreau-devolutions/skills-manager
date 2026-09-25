@@ -86,8 +86,8 @@ and [`dotnet/PARITY.md`](dotnet/PARITY.md).
 
 ## Testing
 
-- Unit tests: `cargo test` in `rust/` (71 tests) and `dotnet test` in `dotnet/`
-  (75 tests).
+- Unit tests: `cargo test` in `rust/` (92 tests) and `dotnet test` in `dotnet/`
+  (97 tests).
 - Parity: [`rust/parity/parity.ps1`](rust/parity/parity.ps1) (PowerShell 7)
   compares a port with a built checkout of the reference CLI.
   [`dotnet/parity/parity.ps1`](dotnet/parity/parity.ps1) runs the same cases
