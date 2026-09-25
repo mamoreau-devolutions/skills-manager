@@ -76,6 +76,7 @@ impl Run {
         self
     }
     /// Node's `windowsHide: true`: start the child without a console window.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     pub fn hide_window(mut self) -> Self {
         #[cfg(windows)]
         {
