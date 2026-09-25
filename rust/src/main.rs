@@ -14,8 +14,10 @@ pub mod detect_agent;
 pub mod download_source;
 pub mod find;
 pub mod frontmatter;
+pub mod gh_installed;
 pub mod git;
 pub mod github_host;
+pub mod github_release;
 pub mod http;
 pub mod install_lock;
 pub mod installer;
@@ -23,7 +25,9 @@ pub mod list;
 pub mod local_lock;
 pub mod notion;
 pub mod paths;
+pub mod pinning;
 pub mod plugin_manifest;
+pub mod preview;
 pub mod proc;
 pub mod remove;
 pub mod sanitize;
@@ -41,6 +45,7 @@ pub mod update;
 pub mod update_source;
 pub mod urlutil;
 pub mod use_cmd;
+pub mod validate;
 pub mod wellknown;
 
 use color::ansi::{BOLD, DIM, RESET, TEXT};
@@ -159,6 +164,8 @@ fn show_help() {
                             https://github.com/vercel-labs/agent-skills
   use <package>@<skill>
                        Generate a prompt for using one skill without installing it
+  preview <package>    Show a skill's files and SKILL.md without installing
+                       (alias: show)
   remove [skills]      Remove installed skills
   list, ls             List installed skills
   find [query]         Search for skills interactively
@@ -173,10 +180,14 @@ fn show_help() {
   -g, --global           Update global skills only
   -p, --project          Update project skills only
   -y, --yes              Skip scope prompt (auto-detect: project if in a project, else global)
+  --dry-run              Report available updates without changing anything
+  --force                Reinstall skills even when they are up to date
+  --unpin                Include pinned skills and move them to their default branch
 
 {b}Project:{r}
   experimental_install Restore skills from skills-lock.json
   init [name]          Initialize a skill (creates <name>/SKILL.md or ./SKILL.md)
+  validate [path]      Check skills against the Agent Skills specification
   experimental_sync    Sync skills from node_modules into agent directories
 
 {b}Add Options:{r}
@@ -190,12 +201,25 @@ fn show_help() {
   --subagent <names>     Install to Eve subagents (use 'root' for the root agent)
   --all                  Shorthand for --skill '*' --agent '*' -y
   --full-depth           Search all subdirectories even when a root SKILL.md exists
+  --pin <ref>            Install from a tag, branch or commit and pin it ('latest' = newest release)
   --json                 Output results as JSON (machine-readable, no ANSI codes)
 
 {b}Use Options:{r}
   -s, --skill <skill>    Specify the skill to use
   -a, --agent <agent>    Start one supported agent interactively
   --full-depth           Search all subdirectories even when a root SKILL.md exists
+
+{b}Preview Options:{r}
+  -s, --skill <skill>    Specify the skill to preview
+  --file <path>          Print one file of the skill instead of the overview
+  --full-depth           Search all subdirectories even when a root SKILL.md exists
+  --json                 Output as JSON (machine-readable, no ANSI codes)
+  --no-pager             Do not page the output
+
+{b}Validate Options:{r}
+  --fix                  Remove install tracking metadata from SKILL.md files
+  --strict               Fail on warnings as well as errors
+  --json                 Output as JSON (machine-readable, no ANSI codes)
 
 {b}Remove Options:{r}
   -g, --global           Remove from global scope
@@ -221,6 +245,7 @@ fn show_help() {
   {d}${r} skills add vercel-labs/agent-skills
   {d}${r} skills use vercel-labs/agent-skills@vercel-optimize | claude
   {d}${r} skills use vercel-labs/agent-skills --skill vercel-optimize --agent claude-code
+  {d}${r} skills preview vercel-labs/agent-skills@web-design-guidelines
   {d}${r} skills add vercel-labs/agent-skills -g
   {d}${r} skills add vercel-labs/agent-skills --agent claude-code cursor
   {d}${r} skills add vercel-labs/agent-skills --skill pr-review commit
@@ -238,8 +263,11 @@ fn show_help() {
   {d}${r} skills update
   {d}${r} skills update my-skill             {d}# update a single skill{r}
   {d}${r} skills update -g                    {d}# update global skills only{r}
+  {d}${r} skills update --dry-run             {d}# check without installing{r}
+  {d}${r} skills add vercel-labs/agent-skills --pin v1.0.0
   {d}${r} skills experimental_install            {d}# restore from skills-lock.json{r}
   {d}${r} skills init my-skill
+  {d}${r} skills validate                     {d}# check skills before publishing{r}
   {d}${r} skills experimental_sync              {d}# sync from node_modules{r}
   {d}${r} skills experimental_sync -y           {d}# sync without prompts{r}
 
@@ -385,6 +413,10 @@ fn run(args: Vec<String>) {
     {
         if matches!(command, "remove" | "rm" | "r") {
             show_remove_help();
+        } else if matches!(command, "preview" | "show") {
+            preview::print_preview_help();
+        } else if command == "validate" {
+            validate::print_validate_help();
         } else {
             show_help();
         }
@@ -433,6 +465,8 @@ fn run(args: Vec<String>) {
             let (source, opts, errors) = use_cmd::parse_use_options(&rest);
             use_cmd::run_use(&source, &opts, &errors);
         }
+        "preview" | "show" => preview::run_preview(&rest),
+        "validate" => validate::run_validate(&rest),
         "remove" | "rm" | "r" => {
             let (skills, opts) = remove::parse_remove_options(&rest);
             remove::remove_command(skills, opts);

@@ -128,13 +128,18 @@ fn parse_tree(data: &Value, branch: &str) -> Option<RepoTree> {
     })
 }
 
-fn fetch_tree_branch(owner_repo: &str, branch: &str, token: Option<&str>) -> BranchResult {
+/// REST API base for the selected GitHub host (`GH_HOST`).
+pub fn github_api_base() -> String {
     let host = get_github_host();
-    let api_base = if host == "github.com" {
+    if host == "github.com" {
         "https://api.github.com".to_string()
     } else {
         format!("https://{}/api/v3", host)
-    };
+    }
+}
+
+fn fetch_tree_branch(owner_repo: &str, branch: &str, token: Option<&str>) -> BranchResult {
+    let api_base = github_api_base();
     let url = format!(
         "{}/repos/{}/git/trees/{}?recursive=1",
         api_base,

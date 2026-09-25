@@ -53,6 +53,8 @@ pub struct AddOptions {
     pub copy: bool,
     pub subagent: Option<Vec<String>>,
     pub json: bool,
+    /// `--pin <ref>` (extension): install from a ref and record it as pinned.
+    pub pin: Option<String>,
 }
 
 /// A value computed on a background thread (stands in for an early-started Promise).
@@ -1327,6 +1329,27 @@ pub fn run_add(args: &[String], mut options: AddOptions) {
     ctx.cleanup();
 }
 
+/// The ref to install for `--pin <pin>`: the pin itself, or the newest
+/// release tag for `--pin latest`.
+fn resolve_pin(parsed: &ParsedSource, pin: &str) -> Result<String, String> {
+    crate::pinning::check_pin(&parsed.kind, parsed.r#ref.as_deref(), pin)?;
+    if pin != crate::pinning::PIN_LATEST {
+        return Ok(pin.to_string());
+    }
+    let owner_repo = get_owner_repo(parsed).unwrap_or_default();
+    match crate::github_release::resolve_latest_release(&owner_repo) {
+        Ok(Some(tag)) => Ok(tag),
+        Ok(None) => Err(format!(
+            "No releases found for {}. Pass a tag, branch or commit SHA to --pin.",
+            owner_repo
+        )),
+        Err(e) => Err(format!(
+            "Could not resolve the latest release of {}: {}",
+            owner_repo, e
+        )),
+    }
+}
+
 fn run_add_inner(
     source: &str,
     options: &mut AddOptions,
@@ -1369,7 +1392,13 @@ fn run_add_inner(
         ui::Spinner::new()
     };
     spinner.start("Parsing source…");
-    let parsed: ParsedSource = parse_source(&effective_source)?;
+    let mut parsed: ParsedSource = parse_source(&effective_source)?;
+    // `--pin`: install from the pinned ref, as for `<source>#<ref>`. Errors are
+    // reported after the Source line so the spinner is stopped first.
+    let pin_result = options.pin.as_deref().map(|pin| resolve_pin(&parsed, pin));
+    if let Some(Ok(r)) = &pin_result {
+        parsed.r#ref = Some(r.clone());
+    }
     let mut direct_download = parsed.kind == "download" || notion_label.is_some();
     spinner.stop(&match &notion_label {
         Some(l) => format!("Source: {}", l),
@@ -1397,6 +1426,11 @@ fn run_add_inner(
                 .unwrap_or_default()
         ),
     });
+    let pinned = match pin_result {
+        Some(Err(e)) => return Err(e.into()),
+        Some(Ok(_)) => true,
+        None => false,
+    };
 
     let owner_repo_raw = if parsed.kind == "well-known" || parsed.kind == "download" {
         None
@@ -2172,6 +2206,9 @@ fn run_add_inner(
                 e.insert("sourceUrl".into(), Value::String(parsed.url.clone()));
                 if let Some(r) = &parsed.r#ref {
                     e.insert("ref".into(), Value::String(r.clone()));
+                    if pinned {
+                        e.insert("pinned".into(), Value::Bool(true));
+                    }
                 }
                 if let Some(sp) = &skill_path {
                     e.insert("skillPath".into(), Value::String(sp.clone()));
@@ -2226,6 +2263,9 @@ fn run_add_inner(
             }
             if let Some(r) = &parsed.r#ref {
                 e.insert("ref".into(), Value::String(r.clone()));
+                if pinned {
+                    e.insert("pinned".into(), Value::Bool(true));
+                }
             }
             e.insert("sourceType".into(), Value::String(parsed.kind.clone()));
             if let Some(sp) = skill_path {
@@ -2269,6 +2309,9 @@ fn run_add_inner(
                     .map(Value::String)
                     .unwrap_or(Value::Null),
             );
+            if pinned {
+                o.insert("pinned".into(), Value::Bool(true));
+            }
             o.insert(
                 "hash".into(),
                 hash_of(&name).map(Value::String).unwrap_or(Value::Null),
@@ -2521,6 +2564,13 @@ pub fn parse_add_options(args: &[String]) -> (Vec<String>, AddOptions, Vec<Strin
                     }
                 }
             }
+            "--pin" => match args.get(i + 1) {
+                Some(v) if !v.is_empty() && !v.starts_with('-') => {
+                    o.pin = Some(v.clone());
+                    i += 1;
+                }
+                _ => errors.push("--pin requires a ref".to_string()),
+            },
             "--full-depth" => o.full_depth = true,
             "--json" => o.json = true,
             "--copy" => o.copy = true,
@@ -2571,6 +2621,15 @@ mod tests {
         assert_eq!(errs, s(&["--metadata must be valid JSON"]));
         let (_, _, errs) = parse_add_options(&s(&["x", "--metadata"]));
         assert_eq!(errs, s(&["--metadata requires a JSON value"]));
+        let (src, o, errs) = parse_add_options(&s(&["x", "--pin", "v1.0", "-y"]));
+        assert_eq!(src, s(&["x"]));
+        assert_eq!(o.pin.as_deref(), Some("v1.0"));
+        assert!(o.yes && errs.is_empty());
+        let (_, o, errs) = parse_add_options(&s(&["x", "--pin", "-y"]));
+        assert_eq!(errs, s(&["--pin requires a ref"]));
+        assert!(o.pin.is_none() && o.yes);
+        let (_, _, errs) = parse_add_options(&s(&["x", "--pin"]));
+        assert_eq!(errs, s(&["--pin requires a ref"]));
     }
 
     #[test]

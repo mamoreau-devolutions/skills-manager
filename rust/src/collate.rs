@@ -55,6 +55,12 @@ fn tertiary(c: char) -> u32 {
     }
 }
 
+/// Ordinal comparison by UTF-16 code units (C# `string.CompareOrdinal`, JS
+/// default `sort()`), used where extensions need a culture-free order.
+pub fn ordinal_cmp(a: &str, b: &str) -> Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
 pub fn locale_compare(a: &str, b: &str) -> Ordering {
     let pa: Vec<u32> = a.chars().filter_map(primary).collect();
     let pb: Vec<u32> = b.chars().filter_map(primary).collect();
