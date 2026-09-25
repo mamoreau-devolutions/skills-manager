@@ -76,6 +76,8 @@ internal static class Program
                                         https://github.com/vercel-labs/agent-skills
               use <package>@<skill>
                                    Generate a prompt for using one skill without installing it
+              preview <package>    Show a skill's files and SKILL.md without installing
+                                   (alias: show)
               remove [skills]      Remove installed skills
               list, ls             List installed skills
               find [query]         Search for skills interactively
@@ -90,10 +92,14 @@ internal static class Program
               -g, --global           Update global skills only
               -p, --project          Update project skills only
               -y, --yes              Skip scope prompt (auto-detect: project if in a project, else global)
+              --dry-run              Report available updates without changing anything
+              --force                Reinstall skills even when they are up to date
+              --unpin                Include pinned skills and move them to their default branch
 
             {{b}}Project:{{r}}
               experimental_install Restore skills from skills-lock.json
               init [name]          Initialize a skill (creates <name>/SKILL.md or ./SKILL.md)
+              validate [path]      Check skills against the Agent Skills specification
               experimental_sync    Sync skills from node_modules into agent directories
 
             {{b}}Add Options:{{r}}
@@ -107,12 +113,25 @@ internal static class Program
               --subagent <names>     Install to Eve subagents (use 'root' for the root agent)
               --all                  Shorthand for --skill '*' --agent '*' -y
               --full-depth           Search all subdirectories even when a root SKILL.md exists
+              --pin <ref>            Install from a tag, branch or commit and pin it ('latest' = newest release)
               --json                 Output results as JSON (machine-readable, no ANSI codes)
 
             {{b}}Use Options:{{r}}
               -s, --skill <skill>    Specify the skill to use
               -a, --agent <agent>    Start one supported agent interactively
               --full-depth           Search all subdirectories even when a root SKILL.md exists
+
+            {{b}}Preview Options:{{r}}
+              -s, --skill <skill>    Specify the skill to preview
+              --file <path>          Print one file of the skill instead of the overview
+              --full-depth           Search all subdirectories even when a root SKILL.md exists
+              --json                 Output as JSON (machine-readable, no ANSI codes)
+              --no-pager             Do not page the output
+
+            {{b}}Validate Options:{{r}}
+              --fix                  Remove install tracking metadata from SKILL.md files
+              --strict               Fail on warnings as well as errors
+              --json                 Output as JSON (machine-readable, no ANSI codes)
 
             {{b}}Remove Options:{{r}}
               -g, --global           Remove from global scope
@@ -138,6 +157,7 @@ internal static class Program
               {{d}}${{r}} skills add vercel-labs/agent-skills
               {{d}}${{r}} skills use vercel-labs/agent-skills@vercel-optimize | claude
               {{d}}${{r}} skills use vercel-labs/agent-skills --skill vercel-optimize --agent claude-code
+              {{d}}${{r}} skills preview vercel-labs/agent-skills@web-design-guidelines
               {{d}}${{r}} skills add vercel-labs/agent-skills -g
               {{d}}${{r}} skills add vercel-labs/agent-skills --agent claude-code cursor
               {{d}}${{r}} skills add vercel-labs/agent-skills --skill pr-review commit
@@ -155,8 +175,11 @@ internal static class Program
               {{d}}${{r}} skills update
               {{d}}${{r}} skills update my-skill             {{d}}# update a single skill{{r}}
               {{d}}${{r}} skills update -g                    {{d}}# update global skills only{{r}}
+              {{d}}${{r}} skills update --dry-run             {{d}}# check without installing{{r}}
+              {{d}}${{r}} skills add vercel-labs/agent-skills --pin v1.0.0
               {{d}}${{r}} skills experimental_install            {{d}}# restore from skills-lock.json{{r}}
               {{d}}${{r}} skills init my-skill
+              {{d}}${{r}} skills validate                     {{d}}# check skills before publishing{{r}}
               {{d}}${{r}} skills experimental_sync              {{d}}# sync from node_modules{{r}}
               {{d}}${{r}} skills experimental_sync -y           {{d}}# sync without prompts{{r}}
 
@@ -255,6 +278,8 @@ internal static class Program
         if (command is not ("--help" or "-h" or "--version" or "-v") && rest.Any(a => a is "--help" or "-h"))
         {
             if (command is "remove" or "rm" or "r") ShowRemoveHelp();
+            else if (command is "preview" or "show") PreviewCommand.PrintHelp();
+            else if (command == "validate") ValidateCommand.PrintHelp();
             else ShowHelp();
             return;
         }
@@ -295,6 +320,12 @@ internal static class Program
                 UseCommand.Run(source, opts, errors);
                 break;
             }
+            case "preview" or "show":
+                PreviewCommand.Run(rest);
+                break;
+            case "validate":
+                ValidateCommand.Run(rest);
+                break;
             case "remove" or "rm" or "r":
             {
                 var (skills, opts) = RemoveCommand.ParseOptions(rest);

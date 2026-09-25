@@ -27,9 +27,11 @@ internal static class UseCommand
     ];
 
     /// A skill to materialize: either in-memory files or a directory on disk.
-    private sealed record UseSkill(string Name, string DirectoryName, string? RawContent, List<SnapshotFile>? Files, string? Path);
+    private sealed record UseSkill(string Name, string Description, string DirectoryName, string? RawContent, List<SnapshotFile>? Files, string? Path);
 
-    private sealed record Materialized(string TempRoot, string SkillDir, string SkillMd, bool HasSupportingFiles);
+    /// A resolved skill copied into a temp directory. `Name`/`Description` are
+    /// the selected skill's (as parsed from SKILL.md); the caller owns `TempRoot`.
+    internal sealed record Materialized(string Name, string Description, string TempRoot, string SkillDir, string SkillMd, bool HasSupportingFiles);
 
     public static (List<string> Source, UseOptions Options, List<string> Errors) ParseOptions(IReadOnlyList<string> args)
     {
@@ -108,13 +110,13 @@ internal static class UseCommand
     private static string UnsupportedAgentError(string a) =>
         $"Running {Agents.Get(a).DisplayName} is not supported yet.\nSupported agents for skills use --agent: {SupportedList}";
 
-    private static string MultipleError(string source, IReadOnlyList<string> names)
+    private static string MultipleError(string command, string source, IReadOnlyList<string> names)
     {
         var first = names.Count > 0 ? names[0] : "<skill>";
         var lines = new List<string> { "This source contains multiple skills. Specify exactly one skill:" };
         lines.AddRange(names.Select(n => $"  - {n}"));
         lines.Add("");
-        lines.Add($"Examples:\n  skills use {source}@{first}\n  skills use {source} --skill {first}");
+        lines.Add($"Examples:\n  skills {command} {source}@{first}\n  skills {command} {source} --skill {first}");
         return string.Join("\n", lines);
     }
 
@@ -136,18 +138,18 @@ internal static class UseCommand
         return optSel ?? sourceSel;
     }
 
-    private static Skill SelectSkill(List<Skill> skills, string? selector, string source)
+    private static Skill SelectSkill(List<Skill> skills, string? selector, string source, string command)
     {
         if (skills.Count == 0) throw new UseFailure("No valid skills found. Skills require a SKILL.md with name and description.");
         var names = skills.Select(SkillDiscovery.DisplayName).ToList();
-        if (selector == null) return skills.Count == 1 ? skills[0] : throw new UseFailure(MultipleError(source, names));
+        if (selector == null) return skills.Count == 1 ? skills[0] : throw new UseFailure(MultipleError(command, source, names));
         var matched = SkillDiscovery.Filter(skills, [selector]);
         if (matched.Count == 0) throw new UseFailure(NoMatchError(selector, names));
         if (matched.Count > 1) throw new UseFailure($"Skill selector \"{selector}\" matched multiple skills.");
         return matched[0];
     }
 
-    private static UseSkill SelectWellKnown(List<WellKnownSkill> skills, string? selector, string source)
+    private static UseSkill SelectWellKnown(List<WellKnownSkill> skills, string? selector, string source, string command)
     {
         if (skills.Count == 0)
             throw new UseFailure("No skills found at this URL. Make sure the server has a /.well-known/agent-skills/index.json or /.well-known/skills/index.json file.");
@@ -155,7 +157,7 @@ internal static class UseCommand
         WellKnownSkill s;
         if (selector == null)
         {
-            if (skills.Count != 1) throw new UseFailure(MultipleError(source, names));
+            if (skills.Count != 1) throw new UseFailure(MultipleError(command, source, names));
             s = skills[0];
         }
         else
@@ -166,7 +168,7 @@ internal static class UseCommand
             if (m.Count > 1) throw new UseFailure($"Skill selector \"{selector}\" matched multiple skills.");
             s = m[0];
         }
-        return new UseSkill(s.Name, s.InstallName, s.Content, s.Files, null);
+        return new UseSkill(s.Name, s.Description, s.InstallName, s.Content, s.Files, null);
     }
 
     private static void WriteSafeFile(string dir, string rel, byte[] contents)
@@ -224,6 +226,19 @@ internal static class UseCommand
     private static Materialized Materialize(UseSkill skill)
     {
         var tempRoot = Sys.MkdTemp("skills-use-");
+        try
+        {
+            return MaterializeInto(tempRoot, skill);
+        }
+        catch
+        {
+            Git.TryCleanup(tempRoot);
+            throw;
+        }
+    }
+
+    private static Materialized MaterializeInto(string tempRoot, UseSkill skill)
+    {
         var skillDir = NodePath.Join(tempRoot, Installer.SanitizeName(skill.DirectoryName.Length == 0 ? skill.Name : skill.DirectoryName));
         if (!NodePath.IsPathSafe(tempRoot, skillDir)) throw new UseFailure("Invalid skill name: potential path traversal detected");
         Directory.CreateDirectory(skillDir);
@@ -239,7 +254,94 @@ internal static class UseCommand
             raw = skill.RawContent;
         }
         var skillMd = raw ?? SkillDiscovery.ReadUtf8(NodePath.Join(skillDir, "SKILL.md"));
-        return new Materialized(tempRoot, skillDir, skillMd, ContainsSupportingFiles(skillDir, skillDir));
+        return new Materialized(skill.Name, skill.Description, tempRoot, skillDir, skillMd, ContainsSupportingFiles(skillDir, skillDir));
+    }
+
+    /// Resolve `source` (plus an optional `--skill` selector) to exactly one
+    /// skill and materialize it into a fresh temp directory. Shared by `skills use`
+    /// and `skills preview`; `command` names the subcommand in the "multiple
+    /// skills" error examples. Any clone/download temp directory is removed before
+    /// returning; the caller owns `Materialized.TempRoot`.
+    /// <exception cref="UseFailure">Any resolution error (message as printed).</exception>
+    internal static Materialized ResolveSkill(string source, string? skill, bool fullDepth, string command)
+    {
+        string? cloneTemp = null;
+        try
+        {
+            var parsed = SourceParser.Parse(source);
+            var selector = ResolveSelector(parsed.SkillFilter, skill);
+            var includeInternal = selector != null;
+            var opts = new DiscoverOptions(includeInternal, fullDepth);
+            UseSkill selected;
+            if (parsed.Kind == "well-known")
+            {
+                List<WellKnownSkill> wk;
+                try
+                {
+                    wk = WellKnown.FetchAllSkills(parsed.Url, includeInternal);
+                }
+                catch (ScopeNotFoundException e)
+                {
+                    throw new UseFailure(e.Message);
+                }
+                if (wk.Count > 0)
+                {
+                    selected = SelectWellKnown(wk, selector, source, command);
+                }
+                else
+                {
+                    var d = DownloadSource.Fetch(parsed.Url);
+                    cloneTemp = d.TempDir;
+                    var s = SelectSkill(SkillDiscovery.Discover(d.RootDir, null, opts), selector, source, command);
+                    selected = new UseSkill(s.Name, s.Description, s.Name, s.RawContent, null, s.Path);
+                }
+            }
+            else
+            {
+                var blobUsed = false;
+                List<Skill> skills;
+                if (parsed.Kind == "download")
+                {
+                    var d = DownloadSource.Fetch(parsed.Url);
+                    cloneTemp = d.TempDir;
+                    skills = SkillDiscovery.Discover(d.RootDir, null, opts);
+                }
+                else if (parsed.Kind == "local")
+                {
+                    var local = parsed.LocalPath ?? "";
+                    if (!Fs.Exists(local)) throw new UseFailure($"Local path does not exist: {local}");
+                    skills = SkillDiscovery.Discover(local, parsed.Subpath, opts);
+                }
+                else
+                {
+                    BlobInstallResult? blob = null;
+                    if (parsed.Kind == "github" && !fullDepth && SourceParser.GetOwnerRepo(parsed) is { } or
+                        && BlobAllowedOwners.Contains(or.Split('/')[0].ToLowerInvariant()))
+                        blob = Blob.TryBlobInstall(or, new BlobOptions(parsed.Subpath, selector, parsed.Ref, true, includeInternal));
+                    if (blob != null)
+                    {
+                        blobUsed = true;
+                        skills = blob.Skills;
+                    }
+                    else
+                    {
+                        cloneTemp = Git.CloneRepo(parsed.Url, parsed.Ref);
+                        skills = SkillDiscovery.Discover(cloneTemp, parsed.Subpath, opts);
+                    }
+                }
+                selected = ToUseSkill(SelectSkill(skills, selector, source, command), blobUsed);
+            }
+            return Materialize(selected);
+        }
+        catch (Exception e) when (e is SourceParseException or DiscoverException or DownloadException or ArchiveValidationException
+                                      or GitCloneException or IOException or UnauthorizedAccessException)
+        {
+            throw new UseFailure(e.Message);
+        }
+        finally
+        {
+            Git.TryCleanup(cloneTemp);
+        }
     }
 
     [System.Diagnostics.CodeAnalysis.DoesNotReturn]
@@ -272,9 +374,9 @@ internal static class UseCommand
         {
             var md = b.Files.FirstOrDefault(f => f.Path.ToLowerInvariant() == "skill.md");
             var raw = s.RawContent ?? (md != null ? Encoding.UTF8.GetString(md.Contents) : "");
-            return new UseSkill(s.Name, s.Name, raw, b.Files, null);
+            return new UseSkill(s.Name, s.Description, s.Name, raw, b.Files, null);
         }
-        return new UseSkill(s.Name, s.Name, s.RawContent, null, s.Path);
+        return new UseSkill(s.Name, s.Description, s.Name, s.RawContent, null, s.Path);
     }
 
     public static void Run(List<string> sourceArgs, UseOptions options, List<string> parseErrors)
@@ -290,85 +392,16 @@ internal static class UseCommand
         var useAgent = options.Agent?.FirstOrDefault();
         if (useAgent != null && SupportedUseAgents.All(x => x.Agent != useAgent)) Fail(UnsupportedAgentError(useAgent));
 
-        var source = sourceArgs[0];
-        string? cloneTemp = null;
         Materialized m;
         try
         {
-            var parsed = SourceParser.Parse(source);
-            var selector = ResolveSelector(parsed.SkillFilter, options.Skill);
-            var includeInternal = selector != null;
-            var opts = new DiscoverOptions(includeInternal, options.FullDepth);
-            UseSkill selected;
-            if (parsed.Kind == "well-known")
-            {
-                List<WellKnownSkill> wk;
-                try
-                {
-                    wk = WellKnown.FetchAllSkills(parsed.Url, includeInternal);
-                }
-                catch (ScopeNotFoundException e)
-                {
-                    Fail(e.Message);
-                    return;
-                }
-                if (wk.Count > 0)
-                {
-                    selected = SelectWellKnown(wk, selector, source);
-                }
-                else
-                {
-                    var d = DownloadSource.Fetch(parsed.Url);
-                    cloneTemp = d.TempDir;
-                    var s = SelectSkill(SkillDiscovery.Discover(d.RootDir, null, opts), selector, source);
-                    selected = new UseSkill(s.Name, s.Name, s.RawContent, null, s.Path);
-                }
-            }
-            else
-            {
-                var blobUsed = false;
-                List<Skill> skills;
-                if (parsed.Kind == "download")
-                {
-                    var d = DownloadSource.Fetch(parsed.Url);
-                    cloneTemp = d.TempDir;
-                    skills = SkillDiscovery.Discover(d.RootDir, null, opts);
-                }
-                else if (parsed.Kind == "local")
-                {
-                    var local = parsed.LocalPath ?? "";
-                    if (!Fs.Exists(local)) Fail($"Local path does not exist: {local}");
-                    skills = SkillDiscovery.Discover(local, parsed.Subpath, opts);
-                }
-                else
-                {
-                    BlobInstallResult? blob = null;
-                    if (parsed.Kind == "github" && !options.FullDepth && SourceParser.GetOwnerRepo(parsed) is { } or
-                        && BlobAllowedOwners.Contains(or.Split('/')[0].ToLowerInvariant()))
-                        blob = Blob.TryBlobInstall(or, new BlobOptions(parsed.Subpath, selector, parsed.Ref, true, includeInternal));
-                    if (blob != null)
-                    {
-                        blobUsed = true;
-                        skills = blob.Skills;
-                    }
-                    else
-                    {
-                        cloneTemp = Git.CloneRepo(parsed.Url, parsed.Ref);
-                        skills = SkillDiscovery.Discover(cloneTemp, parsed.Subpath, opts);
-                    }
-                }
-                selected = ToUseSkill(SelectSkill(skills, selector, source), blobUsed);
-            }
-            m = Materialize(selected);
+            m = ResolveSkill(sourceArgs[0], options.Skill, options.FullDepth, "use");
         }
-        catch (Exception e) when (e is UseFailure or SourceParseException or DiscoverException or DownloadException or ArchiveValidationException
-                                      or GitCloneException or IOException or UnauthorizedAccessException)
+        catch (UseFailure e)
         {
-            Git.TryCleanup(cloneTemp);
             Fail(e.Message);
             return;
         }
-        Git.TryCleanup(cloneTemp);
 
         var prompt = BuildPrompt(m.SkillMd, m.SkillDir, m.HasSupportingFiles);
         if (useAgent != null)

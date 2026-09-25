@@ -22,6 +22,12 @@ internal sealed class UpdateOptions
     public bool Project { get; set; }
     public bool Yes { get; set; }
     public List<string>? Skills { get; set; }
+
+    // Extensions: report without changing anything / reinstall even when
+    // current / include pinned skills and clear their pin.
+    public bool DryRun { get; set; }
+    public bool Force { get; set; }
+    public bool Unpin { get; set; }
 }
 
 internal sealed record SkippedSkill(string Name, string Reason, string SourceUrl, string SourceType, string? Ref);
@@ -29,6 +35,9 @@ internal sealed record SkippedSkill(string Name, string Reason, string SourceUrl
 internal static class UpdateCommand
 {
     private sealed record ProjectSkill(string Name, JsonNode Entry);
+
+    /// `WellKnownOutcome.Pending`: changed skills as (name, base URL) under `--dry-run`.
+    private sealed record WellKnownOutcome(int Ok, int Fail, bool ChangedAny, List<(string Name, string Source)> Pending);
 
     private sealed record WellKnownItem(string Name, string Digest, List<string>? Subagents);
 
@@ -59,6 +68,15 @@ internal static class UpdateCommand
                     break;
                 case "-y" or "--yes":
                     o.Yes = true;
+                    break;
+                case "--dry-run":
+                    o.DryRun = true;
+                    break;
+                case "--force":
+                    o.Force = true;
+                    break;
+                case "--unpin":
+                    o.Unpin = true;
                     break;
                 default:
                     if (!a.StartsWith('-')) positional.Add(a);
@@ -160,7 +178,7 @@ internal static class UpdateCommand
         Sys.OutLine();
         Sys.OutLine($"{Dim}Warning:{Reset} The following skills from {Dim}{source}{Reset} appear to have been deleted upstream:");
         foreach (var d in deleted) Sys.OutLine($"  {Dim}•{Reset} {d}");
-        if (o.Yes || !Sys.StdinIsTty())
+        if (o.Yes || o.DryRun || !Sys.StdinIsTty())
         {
             Sys.OutLine($"{Dim}Skipping deletion in non-interactive mode.{Reset}");
             return;
@@ -186,7 +204,9 @@ internal static class UpdateCommand
         return new Resolution(r.DeletedSkills, r.ResolvedPaths);
     }
 
-    private static WellKnownCheck? CheckWellKnown(string baseUrl, List<WellKnownItem> items)
+    /// `force` (update `--force`) marks every tracked skill still in the index as
+    /// changed without comparing digests.
+    private static WellKnownCheck? CheckWellKnown(string baseUrl, List<WellKnownItem> items, bool force)
     {
         if (WellKnown.FetchIndex(baseUrl, true) is not { } index) return null;
         var byName = new Dictionary<string, NormalizedEntry>();
@@ -201,7 +221,11 @@ internal static class UpdateCommand
             if (!byName.TryGetValue(item.Name, out var entry)) continue;
             if (entry is V2Entry v2)
             {
-                if (item.Digest.Length == 0 || v2.Digest != item.Digest) changed.Add(item.Name);
+                if (force || item.Digest.Length == 0 || v2.Digest != item.Digest) changed.Add(item.Name);
+            }
+            else if (force)
+            {
+                changed.Add(item.Name);
             }
             else
             {
@@ -255,14 +279,15 @@ internal static class UpdateCommand
         args.AddRange(subs.Select(s => s.Length == 0 ? "root" : s));
     }
 
-    private static (int Ok, int Fail, bool ChangedAny) ProcessWellKnownUpdates(List<(string BaseUrl, List<WellKnownItem> Items)> groups, bool isGlobal, UpdateOptions o)
+    private static WellKnownOutcome ProcessWellKnownUpdates(List<(string BaseUrl, List<WellKnownItem> Items)> groups, bool isGlobal, UpdateOptions o)
     {
         int ok = 0, fail = 0;
         var changedAny = false;
+        var pending = new List<(string Name, string Source)>();
         foreach (var (baseUrl, items) in groups)
         {
             Sys.Out($"\r{Dim}Checking skills from source: {baseUrl}{Reset}\x1b[K\n");
-            var check = CheckWellKnown(baseUrl, items);
+            var check = CheckWellKnown(baseUrl, items, o.Force);
             if (check == null)
             {
                 Sys.OutLine($"  {Dim}✗ Failed to check skills from {baseUrl}{Reset}");
@@ -277,6 +302,11 @@ internal static class UpdateCommand
             PromptDeletions(baseUrl, check.Removed, isGlobal, o);
             PrintNewSkills(baseUrl, check.NewSkills, isGlobal);
             if (check.ChangedSkills.Count == 0) continue;
+            if (o.DryRun)
+            {
+                pending.AddRange(check.ChangedSkills.Select(n => (n, baseUrl)));
+                continue;
+            }
             if (CliEntry() == null)
             {
                 fail += check.ChangedSkills.Count;
@@ -303,7 +333,18 @@ internal static class UpdateCommand
                 }
             }
         }
-        return (ok, fail, changedAny);
+        return new WellKnownOutcome(ok, fail, changedAny, pending);
+    }
+
+    /// `--dry-run` result: `Found N <scope> update(s)`, one bullet per update,
+    /// and the no-changes note.
+    private static void PrintDryRunUpdates(string scope, List<(string Name, string Source)> pending)
+    {
+        Sys.OutLine($"{Text}Found {pending.Count} {scope} update(s){Reset}");
+        Sys.OutLine();
+        foreach (var (name, source) in pending) Sys.OutLine($"  • {Sanitize.Metadata(name)} {Dim}({Sanitize.Metadata(source)}){Reset}");
+        Sys.OutLine();
+        Sys.OutLine($"{Dim}Dry run: no changes made. Run skills update without --dry-run to apply.{Reset}");
     }
 
     private static List<DiscoveredSkillLocation> DiscoveredLocations(string tempDir) =>
@@ -331,17 +372,30 @@ internal static class UpdateCommand
                 Sys.OutLine($"{Dim}No global skills tracked in lock file.{Reset}");
                 Sys.OutLine($"{Dim}Install skills with{Reset} {Text}skills add <package> -g{Reset}");
             }
-            return (0, 0, 0);
+            return (0, 0, GhInstalled.ReportGhSkills(true, skills, o.Skills));
         }
 
         var updates = new List<(string Name, JsonNode Entry)>();
         var skipped = new List<SkippedSkill>();
         var checkable = new List<(string Name, JsonNode Entry)>();
         var wkGroups = new List<(string Key, List<WellKnownItem> Items)>();
+        var pinned = new List<(string Name, string Ref)>();
+        var unpinned = new List<(string Name, JsonNode Entry)>();
 
         foreach (var (name, entry) in skills)
         {
             if (!MatchesSkillFilter(name, o.Skills) || entry == null) continue;
+            var action = Pinning.GetPinAction(entry, o.Force, o.Unpin);
+            if (action.Kind == PinActionKind.Skip)
+            {
+                pinned.Add((name, action.Ref!));
+                continue;
+            }
+            if (action.Kind == PinActionKind.Unpin)
+            {
+                unpinned.Add((name, Pinning.UnpinnedEntry(entry)!));
+                continue;
+            }
             if (S(entry, "sourceType") == "well-known" && NonEmpty(entry, "sourceBaseUrl") is { } b && NonEmpty(entry, "wellKnownDigest") is { } digest)
             {
                 AddToGroup(wkGroups, b, new WellKnownItem(name, digest, null));
@@ -356,9 +410,10 @@ internal static class UpdateCommand
         }
 
         var wkCount = wkGroups.Sum(g => g.Items.Count);
-        var (wkOk, wkFail, wkChanged) = ProcessWellKnownUpdates(wkGroups, true, o);
-        ok += wkOk;
-        fail += wkFail;
+        var wk = ProcessWellKnownUpdates(wkGroups, true, o);
+        ok += wk.Ok;
+        fail += wk.Fail;
+        var wkChanged = wk.ChangedAny;
 
         var bySource = new List<(string Key, List<(string Name, JsonNode Entry)> Items)>();
         foreach (var item in checkable) AddToGroup(bySource, $"{S(item.Entry, "source")}\n{S(item.Entry, "ref")}", item);
@@ -383,7 +438,7 @@ internal static class UpdateCommand
                     {
                         foreach (var (name, entry) in items)
                         {
-                            if (Blob.GetSkillFolderHashFromTree(tree, S(entry, "skillPath") ?? "") is { } latest && latest != S(entry, "skillFolderHash"))
+                            if (Blob.GetSkillFolderHashFromTree(tree, S(entry, "skillPath") ?? "") is { } latest && (o.Force || latest != S(entry, "skillFolderHash")))
                                 updates.Add((name, entry));
                         }
                         continue;
@@ -424,7 +479,7 @@ internal static class UpdateCommand
                         }
                     }
                     var relocated = sp != S(entry, "skillPath");
-                    if (relocated || (latest != null && latest != hash))
+                    if (relocated || o.Force || (latest != null && latest != hash))
                     {
                         var e = entry.DeepClone();
                         e["skillPath"] = sp;
@@ -443,35 +498,50 @@ internal static class UpdateCommand
         }
 
         if (checkable.Count > 0) Sys.Out("\r\x1b[K");
-        var checkedCount = checkable.Count + skipped.Count + wkCount;
-        if (checkable.Count == 0 && skipped.Count == 0 && wkCount == 0)
+        var nothingToCheck = checkable.Count == 0 && skipped.Count == 0 && wkCount == 0 && unpinned.Count == 0;
+        var checkedCount = nothingToCheck ? pinned.Count : checkable.Count + skipped.Count + wkCount + unpinned.Count + pinned.Count;
+        // `--unpin`: pinned skills are reinstalled from their default branch.
+        updates.AddRange(unpinned);
+        var hasUpdates = updates.Count > 0 || (o.DryRun && wk.Pending.Count > 0);
+        if (nothingToCheck)
         {
-            if (o.Skills == null) Sys.OutLine($"{Dim}No global skills to check.{Reset}");
-            return (ok, fail, 0);
+            if (pinned.Count == 0 && o.Skills == null) Sys.OutLine($"{Dim}No global skills to check.{Reset}");
         }
-        if (checkable.Count == 0 && skipped.Count == 0)
+        else if (!hasUpdates)
         {
-            if (!wkChanged) Sys.OutLine($"{Text}✓ All global skills are up to date{Reset}");
-            return (ok, fail, checkedCount);
+            if (!(checkable.Count == 0 && skipped.Count > 0) && !wkChanged) Sys.OutLine($"{Text}✓ All global skills are up to date{Reset}");
         }
-        if (checkable.Count == 0)
+        else if (o.DryRun)
         {
-            PrintSkippedSkills(skipped);
-            return (ok, fail, checkedCount);
+            var pending = new List<(string Name, string Source)>(wk.Pending);
+            pending.AddRange(updates.Select(u => (u.Name, S(u.Entry, "source") ?? "")));
+            PrintDryRunUpdates("global", pending);
         }
-        if (updates.Count == 0)
+        else
         {
-            if (!wkChanged) Sys.OutLine($"{Text}✓ All global skills are up to date{Reset}");
-            return (ok, fail, checkedCount);
+            var (a, b) = ReinstallGlobalUpdates(updates);
+            ok += a;
+            fail += b;
         }
+        Pinning.PrintPinnedNotice(pinned);
+        checkedCount += GhInstalled.ReportGhSkills(true, skills, o.Skills);
+        PrintSkippedSkills(skipped);
+        return (ok, fail, checkedCount);
+    }
 
+    private static (int Ok, int Fail) ReinstallGlobalUpdates(List<(string Name, JsonNode Entry)> updates)
+    {
+        int ok = 0, fail = 0;
         Sys.OutLine($"{Text}Found {updates.Count} global update(s){Reset}");
         Sys.OutLine();
         foreach (var (name, entry) in updates)
         {
             var safe = Sanitize.Metadata(name);
             Sys.OutLine($"{Text}Updating {safe}…{Reset}");
+            // `--force` on a pinned skill: reinstall at its ref and keep it pinned.
+            var pin = Pinning.PinnedRef(entry);
             var useEntry = UpdateSourceEntry.FromJson(entry);
+            if (pin != null) useEntry = useEntry with { Ref = null };
             if (UpdateSource.BuildUpdateInstallSource(useEntry) is not { } installUrl)
             {
                 fail++;
@@ -485,6 +555,11 @@ internal static class UpdateCommand
                 continue;
             }
             var args = new List<string> { "add", installUrl, "--skill", name };
+            if (pin != null)
+            {
+                args.Add("--pin");
+                args.Add(pin);
+            }
             if (UpdateSource.ShouldUseFullDepthForUpdate(useEntry)) args.Add("--full-depth");
             args.Add("-g");
             args.Add("-y");
@@ -499,8 +574,7 @@ internal static class UpdateCommand
                 Sys.OutLine($"  {Dim}✗ Failed to update {safe}{Reset}");
             }
         }
-        PrintSkippedSkills(skipped);
-        return (ok, fail, checkedCount);
+        return (ok, fail);
     }
 
     private static void PrintLegacyProjectSkills(List<ProjectSkill> legacy)
@@ -522,16 +596,50 @@ internal static class UpdateCommand
 
     private static (int Ok, int Fail, int Checked) UpdateProjectSkills(UpdateOptions o)
     {
-        var project = GetProjectSkillsForUpdate(o.Skills);
+        var all = GetProjectSkillsForUpdate(o.Skills);
+        var localLock = LocalLock.Read();
         int ok = 0, fail = 0;
-        if (project.Count == 0)
+        if (all.Count == 0)
         {
             if (o.Skills == null)
             {
                 Sys.OutLine($"{Dim}No project skills to update.{Reset}");
                 Sys.OutLine($"{Dim}Install project skills with{Reset} {Text}skills add <package>{Reset}");
             }
-            return (0, 0, 0);
+            return (0, 0, GhInstalled.ReportGhSkills(false, localLock.Skills, o.Skills));
+        }
+        var total = all.Count;
+
+        // Pinned skills are skipped (listed in a notice) unless --force/--unpin;
+        // --unpin reinstalls them from their default branch.
+        var pinned = new List<(string Name, string Ref)>();
+        var project = new List<ProjectSkill>();
+        var lockSkills = (JsonObject)localLock.Skills.DeepClone();
+        foreach (var sk in all)
+        {
+            var action = Pinning.GetPinAction(sk.Entry, o.Force, o.Unpin);
+            switch (action.Kind)
+            {
+                case PinActionKind.Skip:
+                    pinned.Add((sk.Name, action.Ref!));
+                    break;
+                case PinActionKind.Unpin:
+                {
+                    var entry = Pinning.UnpinnedEntry(sk.Entry)!;
+                    lockSkills[sk.Name] = entry.DeepClone();
+                    project.Add(sk with { Entry = entry });
+                    break;
+                }
+                default:
+                    project.Add(sk);
+                    break;
+            }
+        }
+        if (project.Count == 0)
+        {
+            Pinning.PrintPinnedNotice(pinned);
+            var gh = GhInstalled.ReportGhSkills(false, localLock.Skills, o.Skills);
+            return (0, 0, total + gh);
         }
 
         var wkGroups = new List<(string Key, List<WellKnownItem> Items)>();
@@ -552,43 +660,48 @@ internal static class UpdateCommand
         if (updatable.Count == 0 && wkCount == 0)
         {
             Sys.OutLine($"{Dim}No project skills can be updated in place.{Reset}");
+            Pinning.PrintPinnedNotice(pinned);
+            var gh = GhInstalled.ReportGhSkills(false, localLock.Skills, o.Skills);
             PrintLegacyProjectSkills(legacy);
-            return (ok, fail, project.Count);
+            return (ok, fail, total + gh);
         }
 
-        var cwd = Sys.Cwd();
-        var targets = new List<string>();
-        var hasUniversal = false;
-        foreach (var a in Agents.List)
+        if (!o.DryRun)
         {
-            if (Agents.IsUniversalAgent(a.Name))
+            var cwd = Sys.Cwd();
+            var targets = new List<string>();
+            var hasUniversal = false;
+            foreach (var a in Agents.List)
             {
-                if (!hasUniversal && Fs.Exists(NodePath.Join(cwd, ".agents"))) hasUniversal = true;
+                if (Agents.IsUniversalAgent(a.Name))
+                {
+                    if (!hasUniversal && Fs.Exists(NodePath.Join(cwd, ".agents"))) hasUniversal = true;
+                }
+                else if (Fs.Exists(NodePath.Join(cwd, a.SkillsDir.Split('/')[0])))
+                {
+                    targets.Add(a.DisplayName);
+                }
             }
-            else if (Fs.Exists(NodePath.Join(cwd, a.SkillsDir.Split('/')[0])))
-            {
-                targets.Add(a.DisplayName);
-            }
+            var parts = new List<string>();
+            if (hasUniversal) parts.Add("Universal");
+            parts.AddRange(targets);
+            if (parts.Count > 0) Sys.OutLine($"{Text}Updating for: {string.Join(", ", parts)}{Reset}");
+            Sys.OutLine($"{Text}Refreshing {updatable.Count + wkCount} skill(s)…{Reset}");
+            Sys.OutLine();
         }
-        var parts = new List<string>();
-        if (hasUniversal) parts.Add("Universal");
-        parts.AddRange(targets);
-        if (parts.Count > 0) Sys.OutLine($"{Text}Updating for: {string.Join(", ", parts)}{Reset}");
-        Sys.OutLine($"{Text}Refreshing {updatable.Count + wkCount} skill(s)…{Reset}");
-        Sys.OutLine();
 
-        var (wkOk, wkFail, _) = ProcessWellKnownUpdates(wkGroups, false, o);
-        ok += wkOk;
-        fail += wkFail;
+        var wk = ProcessWellKnownUpdates(wkGroups, false, o);
+        ok += wk.Ok;
+        fail += wk.Fail;
+        var pendingUpdates = new List<(string Name, string Source)>(wk.Pending);
 
         var bySource = new List<(string Key, List<ProjectSkill> Items)>();
         foreach (var sk in updatable) AddToGroup(bySource, $"{SourceKey(sk.Entry)}\n{S(sk.Entry, "ref")}", sk);
 
-        var localLock = LocalLock.Read();
         if (updatable.Count > 0 && CliEntry() == null)
         {
             Sys.OutLine($"{Dim}✗ CLI entrypoint not found{Reset}");
-            return (ok, fail + updatable.Count, project.Count);
+            return (ok, fail + updatable.Count, total);
         }
 
         foreach (var (_, group) in bySource)
@@ -597,7 +710,7 @@ internal static class UpdateCommand
             var source = SourceKey(first);
             var cloneSource = UpdateSource.BuildLocalCloneSource(UpdateSourceEntry.FromJson(first));
             var r = S(first, "ref");
-            var lockedForSource = localLock.Skills.Where(kv => SourceKey(kv.Value) == source && S(kv.Value, "ref") == r).Select(kv => kv.Key).ToList();
+            var lockedForSource = lockSkills.Where(kv => SourceKey(kv.Value) == source && S(kv.Value, "ref") == r).Select(kv => kv.Key).ToList();
 
             if (cloneSource == null)
             {
@@ -611,7 +724,7 @@ internal static class UpdateCommand
             try
             {
                 temp = Git.CloneRepo(cloneSource, r);
-                res = CheckAndPromptForDeletions(source, lockedForSource, localLock.Skills, false, o, DiscoveredLocations(temp));
+                res = CheckAndPromptForDeletions(source, lockedForSource, lockSkills, false, o, DiscoveredLocations(temp));
             }
             catch (Exception e) when (IsCheckFailure(e))
             {
@@ -626,10 +739,18 @@ internal static class UpdateCommand
             {
                 var safe = Sanitize.Metadata(sk.Name);
                 if (!res.Resolved.TryGetValue(sk.Name, out var resolved)) continue;
+                if (o.DryRun)
+                {
+                    pendingUpdates.Add((sk.Name, S(sk.Entry, "source") ?? ""));
+                    continue;
+                }
                 var entry = sk.Entry.DeepClone();
                 entry["skillPath"] = resolved;
                 Sys.OutLine($"{Text}Updating {safe}…{Reset}");
+                // `--force` on a pinned skill: reinstall at its ref and keep it pinned.
+                var pin = Pinning.PinnedRef(entry);
                 var useEntry = UpdateSourceEntry.FromJson(entry);
+                if (pin != null) useEntry = useEntry with { Ref = null };
                 if (UpdateSource.BuildLocalUpdateSource(useEntry) is not { } installUrl)
                 {
                     fail++;
@@ -637,6 +758,11 @@ internal static class UpdateCommand
                     continue;
                 }
                 var args = new List<string> { "add", installUrl, "--skill", sk.Name };
+                if (pin != null)
+                {
+                    args.Add("--pin");
+                    args.Add(pin);
+                }
                 AddSubagentArgs(args, Json.StringArray(sk.Entry, "subagents"));
                 if (UpdateSource.ShouldUseFullDepthForUpdate(useEntry)) args.Add("--full-depth");
                 args.Add("-y");
@@ -653,8 +779,15 @@ internal static class UpdateCommand
             }
         }
 
+        if (o.DryRun)
+        {
+            if (pendingUpdates.Count == 0) Sys.OutLine($"{Text}✓ All project skills are up to date{Reset}");
+            else PrintDryRunUpdates("project", pendingUpdates);
+        }
+        Pinning.PrintPinnedNotice(pinned);
+        var ghCount = GhInstalled.ReportGhSkills(false, localLock.Skills, o.Skills);
         PrintLegacyProjectSkills(legacy);
-        return (ok, fail, project.Count);
+        return (ok, fail, total + ghCount);
     }
 
     public static void Run(IReadOnlyList<string> args)

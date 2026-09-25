@@ -54,6 +54,25 @@ internal static partial class Sys
     /// Write to the real stdout, bypassing redirection.
     public static void RealStdout(string s) => WriteTo(false, s);
 
+    /// Write raw bytes to the real stdout (a console gets them decoded as UTF-8).
+    public static void OutBytes(byte[] bytes)
+    {
+        if (bytes.Length == 0) return;
+        lock (OutLock)
+        {
+            if (OperatingSystem.IsWindows() && WinConsole.TryWrite(false, Encoding.UTF8.GetString(bytes))) return;
+            try
+            {
+                StdoutStream.Value.Write(bytes, 0, bytes.Length);
+                StdoutStream.Value.Flush();
+            }
+            catch (IOException)
+            {
+                // Broken pipe: ignore.
+            }
+        }
+    }
+
     public static void Err(string s) => WriteTo(true, s);
 
     public static void ErrLine(string s = "") => Err(s + "\n");

@@ -46,6 +46,49 @@ internal static class ListCommand
     public static string KebabToTitle(string s) =>
         string.Join(" ", s.Split('-').Select(w => w.Length == 0 ? "" : char.ToUpperInvariant(w[0]) + w[1..]));
 
+    /// The `Source:` value: the lock's source (plus ` (pinned <ref>)` for a
+    /// pinned entry), a `gh skill` origin for untracked skills, else `local`.
+    private static string SourceLabel(bool found, JsonNode? entry, string? source, string skillDir)
+    {
+        string label;
+        if (source != null) label = Sanitize.Metadata(source);
+        else if (!found) return GhInstalled.ReadGhOrigin(skillDir) is { } origin ? Sanitize.Metadata(origin.ListLabel()) : "local";
+        else label = "local";
+        return found && Pinning.PinnedRef(entry) is { } r ? $"{label} (pinned {Sanitize.Metadata(r)})" : label;
+    }
+
+    /// `list --json` extension keys: `ref`/`pinned` for pinned lock entries, the
+    /// origin plus `managedBy: "gh"` for skills installed by `gh skill`.
+    private static void AddExtensionJson(JsonObject o, bool found, JsonNode? entry, string skillDir)
+    {
+        if (found)
+        {
+            if (Pinning.PinnedRef(entry) is { } r)
+            {
+                o["ref"] = r;
+                o["pinned"] = true;
+            }
+            return;
+        }
+        switch (GhInstalled.ReadGhOrigin(skillDir))
+        {
+            case GhGitHubOrigin g:
+                o["source"] = g.Source();
+                o["sourceUrl"] = g.Url;
+                o["sourceType"] = "github";
+                o["ref"] = g.GitRef != null ? GhInstalled.ShortRef(g.GitRef) : null;
+                o["pinned"] = g.Pinned != null;
+                o["managedBy"] = "gh";
+                break;
+            case GhLocalOrigin l:
+                o["source"] = l.LocalPath;
+                o["sourceUrl"] = null;
+                o["sourceType"] = "local";
+                o["managedBy"] = "gh";
+                break;
+        }
+    }
+
     public static void Run(IReadOnlyList<string> args)
     {
         var options = ParseOptions(args);
@@ -72,6 +115,7 @@ internal static class ListCommand
         foreach (var (k, v) in locked) bySanitized[Installer.SanitizeName(k)] = v;
         JsonNode? LockEntry(string name) =>
             locked.TryGetPropertyValue(name, out var v) ? v : bySanitized.GetValueOrDefault(Installer.SanitizeName(name));
+        bool HasLockEntry(string name) => locked.ContainsKey(name) || bySanitized.ContainsKey(Installer.SanitizeName(name));
 
         if (options.Json)
         {
@@ -80,7 +124,7 @@ internal static class ListCommand
             {
                 var e = LockEntry(s.Name);
                 JsonNode? Field(string key) => Json.Get(e, key)?.DeepClone();
-                arr.Add((JsonNode)new JsonObject
+                var obj = new JsonObject
                 {
                     ["name"] = s.Name,
                     ["path"] = s.CanonicalPath,
@@ -89,7 +133,9 @@ internal static class ListCommand
                     ["source"] = Field("source"),
                     ["sourceUrl"] = Field("sourceUrl"),
                     ["sourceType"] = Field("sourceType"),
-                });
+                };
+                AddExtensionJson(obj, HasLockEntry(s.Name), e, s.CanonicalPath);
+                arr.Add((JsonNode)obj);
             }
             Sys.OutLine(Json.Stringify(arr));
             return;
@@ -110,8 +156,9 @@ internal static class ListCommand
             var agentInfo = skill.Agents.Count > 0 ? FormatList(skill.Agents.Select(a => Agents.Get(a).DisplayName).ToList(), 5) : $"{Yellow}not linked{Reset}";
             var paddedName = Sanitize.Metadata(skill.Name).PadRight(maxName);
             var paddedPath = shortPath.PadRight(maxPath);
-            var source = Json.NonEmpty(LockEntry(skill.Name), "source");
-            var sourceLabel = source != null ? Sanitize.Metadata(source) : "local";
+            var entry = LockEntry(skill.Name);
+            var source = Json.NonEmpty(entry, "source");
+            var sourceLabel = SourceLabel(HasLockEntry(skill.Name), entry, source, skill.CanonicalPath);
             Sys.OutLine($"{prefix}{Cyan}{paddedName}{Reset} {Dim}{paddedPath}{Reset}");
             Sys.OutLine($"{prefix}  {Dim}Agents:{Reset} {agentInfo}  {Dim}Source:{Reset} {sourceLabel}");
         }

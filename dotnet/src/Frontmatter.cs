@@ -19,6 +19,19 @@ internal sealed record FrontmatterResult(JsonObject Data, string Content);
 
 internal sealed class YamlParseException(string message) : Exception(message);
 
+/// How YAML scalars are typed and mappings ordered.
+internal enum YamlFlavor
+{
+    /// The `yaml` npm package (YAML 1.2 core schema, JS object key order), as
+    /// in the reference CLI.
+    Js,
+
+    /// The Rust port's serde_yaml 0.9 path, used by the extensions: leading-zero
+    /// digit strings stay strings, `0b` integers, 128-bit integers are errors,
+    /// non-finite floats become null, and keys keep document order.
+    Serde,
+}
+
 internal static partial class Frontmatter
 {
     [GeneratedRegex(@"\A---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)\z")]
@@ -27,11 +40,11 @@ internal static partial class Frontmatter
     /// Parse frontmatter. Only plain YAML `---` blocks are supported (never
     /// `---js`), so there is no code-execution path.
     /// <exception cref="YamlParseException">Invalid YAML.</exception>
-    public static FrontmatterResult Parse(string raw)
+    public static FrontmatterResult Parse(string raw, YamlFlavor flavor = YamlFlavor.Js)
     {
         var m = FmRegex().Match(raw);
         if (!m.Success) return new FrontmatterResult(new JsonObject(), raw);
-        var value = ParseYaml(m.Groups[1].Value);
+        var value = ParseYaml(m.Groups[1].Value, flavor);
         return new FrontmatterResult(value as JsonObject ?? new JsonObject(), m.Groups[2].Value);
     }
 
@@ -74,7 +87,10 @@ internal static partial class Frontmatter
         return sb.ToString();
     }
 
-    public static JsonNode? ParseYaml(string src)
+    /// Parse YAML to JSON. `YamlFlavor.Js` (the default) follows the `yaml` npm
+    /// package; `YamlFlavor.Serde` follows the Rust port's serde_yaml path, which
+    /// the extensions use (see <see cref="YamlFlavor"/>).
+    public static JsonNode? ParseYaml(string src, YamlFlavor flavor = YamlFlavor.Js)
     {
         if (string.IsNullOrWhiteSpace(src)) return null;
         var stream = new YamlStream();
@@ -88,7 +104,7 @@ internal static partial class Frontmatter
         }
         if (stream.Documents.Count == 0) return null;
         if (stream.Documents.Count > 1) throw new YamlParseException("Source contains multiple documents; please use YAML.parseAllDocuments()");
-        return ToJson(stream.Documents[0].RootNode);
+        return ToJson(stream.Documents[0].RootNode, flavor == YamlFlavor.Serde);
     }
 
     [GeneratedRegex(@"\A[-+]?[0-9]+\z")]
@@ -132,7 +148,7 @@ internal static partial class Frontmatter
         return ResolvePlain(value);
     }
 
-    private static string KeyString(YamlNode k) => ToJson(k) switch
+    private static string KeyString(YamlNode k) => ToJson(k, false) switch
     {
         null => "",
         JsonValue v when v.TryGetValue<string>(out var str) => str,
@@ -141,19 +157,194 @@ internal static partial class Frontmatter
         var other => Json.Stringify(other, 0),
     };
 
-    private static JsonNode? ToJson(YamlNode node) => node switch
+    private static JsonNode? ToJson(YamlNode node, bool serde) => node switch
     {
-        YamlScalarNode s => ScalarToJson(s),
-        YamlSequenceNode seq => new JsonArray(seq.Children.Select(ToJson).ToArray()),
-        YamlMappingNode map => MappingToJson(map),
+        YamlScalarNode s => serde ? SerdeScalarToJson(s) : ScalarToJson(s),
+        YamlSequenceNode seq => new JsonArray(seq.Children.Select(c => ToJson(c, serde)).ToArray()),
+        YamlMappingNode map => MappingToJson(map, serde),
         _ => null,
     };
 
-    private static JsonObject MappingToJson(YamlMappingNode map)
+    private static JsonObject MappingToJson(YamlMappingNode map, bool serde)
     {
         var obj = new JsonObject();
-        foreach (var (k, v) in map.Children) obj[Unshadow(KeyString(k))] = ToJson(v);
-        return Json.JsKeyOrder(obj);
+        foreach (var (k, v) in map.Children) obj[Unshadow(serde ? SerdeKeyString(k) : KeyString(k))] = ToJson(v, serde);
+        // serde_json's preserve_order maps keep document order; JS objects put
+        // array-index keys first.
+        return serde ? obj : Json.JsKeyOrder(obj);
+    }
+
+    // ─── serde_yaml 0.9 scalar resolution (Rust port) ───
+
+    /// Leading zero(s) followed by digits is a string (YAML 1.2), as in serde_yaml.
+    private static bool DigitsButNotNumber(string scalar)
+    {
+        var s = scalar.Length > 0 && scalar[0] is '-' or '+' ? scalar[1..] : scalar;
+        return s.Length > 1 && s[0] == '0' && s.Skip(1).All(char.IsAsciiDigit);
+    }
+
+    /// Rust `from_str_radix` into a 128-bit unsigned value (optional leading `+`).
+    private static bool TryRadix(string s, int radix, out UInt128 value)
+    {
+        value = 0;
+        if (s.StartsWith('+')) s = s[1..];
+        if (s.Length == 0) return false;
+        foreach (var c in s)
+        {
+            var d = c is >= '0' and <= '9' ? c - '0' : c is >= 'a' and <= 'z' ? c - 'a' + 10 : c is >= 'A' and <= 'Z' ? c - 'A' + 10 : 99;
+            if (d >= radix) return false;
+            if (value > (UInt128.MaxValue - (UInt128)d) / (UInt128)radix) return false; // overflow
+            value = value * (UInt128)radix + (UInt128)d;
+        }
+        return true;
+    }
+
+    private enum SerdeInt
+    {
+        None,
+        Fits64,
+        Fits128,
+    }
+
+    private static readonly (string Prefix, int Radix)[] RadixPrefixes = [("0x", 16), ("0o", 8), ("0b", 2)];
+
+    /// serde_yaml `visit_int` into a serde_yaml::Value: u64/i64 values become
+    /// numbers; values that only fit 128 bits are rejected by the Value visitor.
+    private static SerdeInt SerdeIntKind(string v, out double number)
+    {
+        number = 0;
+        var unpositive = v.StartsWith('+') ? v[1..] : v;
+        foreach (var (prefix, radix) in RadixPrefixes)
+        {
+            if (!unpositive.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            var rest = unpositive[2..];
+            if (rest.StartsWith('+') || rest.StartsWith('-')) return SerdeInt.None;
+            if (TryRadix(rest, radix, out var u))
+            {
+                number = (double)u;
+                return u <= ulong.MaxValue ? SerdeInt.Fits64 : SerdeInt.Fits128;
+            }
+        }
+        if (!unpositive.StartsWith('+') && !unpositive.StartsWith('-') && !DigitsButNotNumber(v) && TryRadix(unpositive, 10, out var dec))
+        {
+            number = (double)dec;
+            return dec <= ulong.MaxValue ? SerdeInt.Fits64 : SerdeInt.Fits128;
+        }
+        if (!v.StartsWith('-')) return SerdeInt.None;
+        var negMax = (UInt128)Int128.MaxValue + 1;
+        var neg64Max = (UInt128)long.MaxValue + 1;
+        foreach (var (prefix, radix) in RadixPrefixes)
+        {
+            if (!v.StartsWith("-" + prefix, StringComparison.Ordinal)) continue;
+            var rest = v[3..];
+            if (rest.StartsWith('+') || rest.StartsWith('-')) continue;
+            if (TryRadix(rest, radix, out var u) && u <= negMax)
+            {
+                number = -(double)u;
+                return u <= neg64Max ? SerdeInt.Fits64 : SerdeInt.Fits128;
+            }
+        }
+        if (!DigitsButNotNumber(v) && v.Length > 1 && v[1] != '+' && v[1] != '-' && TryRadix(v[1..], 10, out var n) && n <= negMax)
+        {
+            number = -(double)n;
+            return n <= neg64Max ? SerdeInt.Fits64 : SerdeInt.Fits128;
+        }
+        return SerdeInt.None;
+    }
+
+    [GeneratedRegex(@"\A[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?\z")]
+    private static partial Regex RustFloatRe();
+
+    [GeneratedRegex(@"\A[-+]?(inf|infinity|nan)\z", RegexOptions.IgnoreCase)]
+    private static partial Regex RustFloatWordRe();
+
+    /// serde_yaml `parse_f64`: finite floats, plus the YAML .inf/.nan words.
+    private static double? SerdeParseF64(string scalar)
+    {
+        var unpositive = scalar;
+        if (scalar.StartsWith('+'))
+        {
+            unpositive = scalar[1..];
+            if (unpositive.StartsWith('+') || unpositive.StartsWith('-')) return null;
+        }
+        if (unpositive is ".inf" or ".Inf" or ".INF") return double.PositiveInfinity;
+        if (scalar is "-.inf" or "-.Inf" or "-.INF") return double.NegativeInfinity;
+        if (scalar is ".nan" or ".NaN" or ".NAN") return double.NaN;
+        if (RustFloatWordRe().IsMatch(unpositive) || !RustFloatRe().IsMatch(unpositive)) return null;
+        var d = double.Parse(unpositive, NumberStyles.Float, CultureInfo.InvariantCulture);
+        return double.IsFinite(d) ? d : null;
+    }
+
+    private static YamlParseException SerdeInvalid(string expected) => new($"invalid value, expected {expected}");
+
+    /// serde_yaml `visit_untagged_scalar`, then the Rust port's yaml_to_json
+    /// (non-finite floats become null).
+    private static JsonNode? SerdeResolvePlain(string v)
+    {
+        if (v is "" or "null" or "Null" or "NULL" or "~") return null;
+        if (v is "true" or "True" or "TRUE") return JsonValue.Create(true);
+        if (v is "false" or "False" or "FALSE") return JsonValue.Create(false);
+        switch (SerdeIntKind(v, out var n))
+        {
+            case SerdeInt.Fits64:
+                return JsonValue.Create(n);
+            case SerdeInt.Fits128:
+                throw new YamlParseException("invalid type: integer, expected any valid YAML value");
+        }
+        if (!DigitsButNotNumber(v) && SerdeParseF64(v) is { } f) return double.IsFinite(f) ? JsonValue.Create(f) : null;
+        return JsonValue.Create(Unshadow(v));
+    }
+
+    private static JsonNode? SerdeScalarToJson(YamlScalarNode s)
+    {
+        var value = s.Value ?? "";
+        var tag = s.Tag.IsEmpty ? "" : s.Tag.Value;
+        switch (tag)
+        {
+            case "tag:yaml.org,2002:bool":
+                return value switch
+                {
+                    "true" or "True" or "TRUE" => JsonValue.Create(true),
+                    "false" or "False" or "FALSE" => JsonValue.Create(false),
+                    _ => throw SerdeInvalid("a boolean"),
+                };
+            case "tag:yaml.org,2002:int":
+                return SerdeIntKind(value, out var n) switch
+                {
+                    SerdeInt.Fits64 => JsonValue.Create(n),
+                    SerdeInt.Fits128 => throw new YamlParseException("invalid type: integer, expected any valid YAML value"),
+                    _ => throw SerdeInvalid("an integer"),
+                };
+            case "tag:yaml.org,2002:float":
+                if (SerdeParseF64(value) is not { } f) throw SerdeInvalid("a float");
+                return double.IsFinite(f) ? JsonValue.Create(f) : null;
+            case "tag:yaml.org,2002:null":
+                return value is "null" or "Null" or "NULL" or "~" ? null : throw SerdeInvalid("null");
+        }
+        if (s.Style is ScalarStyle.Plain or ScalarStyle.Any && (tag.Length == 0 || tag.StartsWith('!'))) return SerdeResolvePlain(value);
+        return JsonValue.Create(Unshadow(value));
+    }
+
+    /// serde_yaml mapping key → string (the Rust port's `yaml_key`).
+    private static string SerdeKeyString(YamlNode k)
+    {
+        var v = ToJson(k, true);
+        switch (v)
+        {
+            case null:
+                return "";
+            case JsonValue jv when jv.TryGetValue<string>(out var str):
+                return str;
+            case JsonValue jv when jv.TryGetValue<bool>(out var b):
+                return b ? "true" : "false";
+            case JsonValue jv when Json.AsNumber(jv) is { } d:
+                var isInt = k is YamlScalarNode ks && SerdeIntKind(ks.Value ?? "", out _) == SerdeInt.Fits64;
+                if (isInt) return ((decimal)d).ToString(CultureInfo.InvariantCulture);
+                // ryu formatting of a float (approximation)
+                return d == Math.Floor(d) && Math.Abs(d) < 1e16 ? ((decimal)d).ToString(CultureInfo.InvariantCulture) + ".0" : d.ToString("R", CultureInfo.InvariantCulture);
+            default:
+                return Json.Stringify(v, 0);
+        }
     }
 
     // ─── YAML emitter ───
