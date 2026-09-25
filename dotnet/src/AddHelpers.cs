@@ -21,6 +21,9 @@ internal sealed class AddOptions
     public List<string>? Subagent { get; set; }
     public bool Json { get; set; }
 
+    /// `--pin <ref>` (extension): install from a ref and record it as pinned.
+    public string? Pin { get; set; }
+
     public AddOptions Clone() => (AddOptions)MemberwiseClone();
 }
 

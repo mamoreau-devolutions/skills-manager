@@ -207,6 +207,20 @@ internal static partial class AddCommand
         var spinner = jsonMode ? Ui.Spinner.Inert() : new Ui.Spinner();
         spinner.Start("Parsing source…");
         var parsed = SourceParser.Parse(effectiveSource);
+        // `--pin`: install from the pinned ref, as for `<source>#<ref>`. Errors are
+        // reported after the Source line so the spinner is stopped first.
+        string? pinError = null;
+        if (options.Pin is { } pin)
+        {
+            try
+            {
+                parsed.Ref = ResolvePin(parsed, pin);
+            }
+            catch (AddFailure e)
+            {
+                pinError = e.Message;
+            }
+        }
         var directDownload = parsed.Kind == "download" || notionLabel != null;
         spinner.Stop(notionLabel != null
             ? $"Source: {notionLabel}"
@@ -214,6 +228,8 @@ internal static partial class AddCommand
               + (parsed.Ref != null ? $" @ {Pc.Yellow(parsed.Ref)}" : "")
               + (parsed.Subpath != null ? $" ({parsed.Subpath})" : "")
               + (parsed.SkillFilter != null ? $" {Pc.Dim("@")}{Pc.Cyan(parsed.SkillFilter)}" : ""));
+        if (pinError != null) throw new AddFailure(pinError);
+        var pinned = options.Pin != null;
 
         var ownerRepoRaw = parsed.Kind is "well-known" or "download" ? null : SourceParser.GetOwnerRepo(parsed);
         var privacy = parsed.Kind == "github" && ownerRepoRaw != null && SourceParser.ParseOwnerRepo(ownerRepoRaw) is var (po, pr)
@@ -672,7 +688,11 @@ internal static partial class AddCommand
                     ["sourceType"] = parsed.Kind,
                     ["sourceUrl"] = parsed.Url,
                 };
-                if (parsed.Ref != null) e["ref"] = parsed.Ref;
+                if (parsed.Ref != null)
+                {
+                    e["ref"] = parsed.Ref;
+                    if (pinned) e["pinned"] = true;
+                }
                 if (skillPath != null) e["skillPath"] = skillPath;
                 e["skillFolderHash"] = folderHash;
                 if (s.PluginName != null) e["pluginName"] = s.PluginName;
@@ -691,7 +711,11 @@ internal static partial class AddCommand
                 var skillPath = Json.AsString(skillFiles[s.Name]);
                 var e = new JsonObject { ["source"] = string.IsNullOrEmpty(lockSource) ? parsed.Url : lockSource };
                 if (projectLockSourceUrl != null) e["sourceUrl"] = projectLockSourceUrl;
-                if (parsed.Ref != null) e["ref"] = parsed.Ref;
+                if (parsed.Ref != null)
+                {
+                    e["ref"] = parsed.Ref;
+                    if (pinned) e["pinned"] = true;
+                }
                 e["sourceType"] = parsed.Kind;
                 if (!string.IsNullOrEmpty(skillPath)) e["skillPath"] = skillPath;
                 e["computedHash"] = h;
@@ -719,8 +743,9 @@ internal static partial class AddCommand
                     ["status"] = "installed",
                     ["source"] = jsonSource,
                     ["ref"] = parsed.Ref,
-                    ["hash"] = hashes.GetValueOrDefault(name),
                 };
+                if (pinned) o["pinned"] = true;
+                o["hash"] = hashes.GetValueOrDefault(name);
                 if (rs.Count > 0) o["path"] = rs[0].R.CanonicalPath ?? rs[0].R.Path;
                 o["scope"] = installGlobally ? "global" : "project";
                 o["agents"] = new JsonArray(rs.Where(r => !r.R.Skipped).Select(r => (JsonNode?)r.Agent).ToArray());
@@ -844,6 +869,26 @@ internal static partial class AddCommand
         }
     }
 
+    /// The ref to install for `--pin <pin>`: the pin itself, or the newest
+    /// release tag for `--pin latest`.
+    /// <exception cref="AddFailure">An invalid pin or a failed release lookup.</exception>
+    private static string ResolvePin(ParsedSource parsed, string pin)
+    {
+        if (Pinning.CheckPin(parsed.Kind, parsed.Ref, pin) is { } error) throw new AddFailure(error);
+        if (pin != Pinning.PinLatest) return pin;
+        var ownerRepo = SourceParser.GetOwnerRepo(parsed) ?? "";
+        string? tag;
+        try
+        {
+            tag = GitHubRelease.ResolveLatestRelease(ownerRepo);
+        }
+        catch (GitHubReleaseException e)
+        {
+            throw new AddFailure($"Could not resolve the latest release of {ownerRepo}: {e.Message}");
+        }
+        return tag ?? throw new AddFailure($"No releases found for {ownerRepo}. Pass a tag, branch or commit SHA to --pin.");
+    }
+
     /// Parse `add` arguments. Returns (sources, options, errors).
     public static (List<string> Sources, AddOptions Options, List<string> Errors) ParseOptions(IReadOnlyList<string> args)
     {
@@ -882,6 +927,10 @@ internal static partial class AddCommand
                     if (i >= args.Count) errors.Add("--metadata requires a JSON value");
                     else if (Json.TryParse(args[i], out _)) o.Metadata = args[i];
                     else errors.Add("--metadata must be valid JSON");
+                    break;
+                case "--pin":
+                    if (i + 1 < args.Count && args[i + 1].Length > 0 && !args[i + 1].StartsWith('-')) o.Pin = args[++i];
+                    else errors.Add("--pin requires a ref");
                     break;
                 case "--full-depth":
                     o.FullDepth = true;

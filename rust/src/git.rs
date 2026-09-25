@@ -456,7 +456,7 @@ fn remove_file_or_link(path: &str, m: &std::fs::Metadata) -> std::io::Result<()>
 }
 
 fn clear_readonly(path: &str) {
-    let Ok(entries) = std::fs::read_dir(path) else {
+    let Ok(entries) = crate::sys::read_dir(path) else {
         return;
     };
     for e in entries.flatten() {

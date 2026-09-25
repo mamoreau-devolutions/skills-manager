@@ -213,7 +213,7 @@ fn try_extract(data: &[u8], dir: &str, l: &Limits) -> Result<bool, String> {
 }
 
 fn single_top_level_directory(dir: &str) -> Option<String> {
-    let entries: Vec<_> = std::fs::read_dir(dir)
+    let entries: Vec<_> = crate::sys::read_dir(dir)
         .ok()?
         .flatten()
         .filter(|e| e.file_name() != "__MACOSX")

@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # Nightly, with the network cases (GitHub and skills.sh), which are too
+  # slow and rate-limited to gate every pull request.
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Also run the parity cases that use GitHub and skills.sh
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DISABLE_TELEMETRY: 1
+  # The reference CLI release the ports are compatible with (see docs/EXTENSIONS.md).
+  REFERENCE_REF: v1.7.0
+  PARITY_NETWORK: ${{ github.event_name == 'schedule' || inputs.network == true }}
+  # Only reaches the parity sandboxes with -PassGitHubToken (network runs).
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --release -- -D warnings
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skills-rust-${{ runner.os }}
+          path: rust/target/release/skills${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+
+  dotnet:
+    name: C# (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Test
+        working-directory: dotnet
+        run: dotnet test -c Release
+      # NativeAOT is the build the README recommends; building it here also
+      # runs the AOT and trim analyzers with warnings as errors.
+      - name: Publish (NativeAOT)
+        run: dotnet publish dotnet/src/Skills.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true -o dotnet/publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skills-csharp-${{ runner.os }}
+          path: dotnet/publish/skills${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+
+  # The two ports must behave identically, extensions included.
+  lockstep:
+    name: Lockstep (${{ matrix.os }})
+    needs: [rust, dotnet]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: skills-*-${{ runner.os }}
+          path: bin
+      - name: Make binaries executable
+        if: runner.os != 'Windows'
+        run: chmod +x bin/*/skills
+      - name: Rust port vs C# port
+        shell: pwsh
+        run: |
+          $exe = $IsWindows ? 'skills.exe' : 'skills'
+          $net = $env:PARITY_NETWORK -eq 'true' ? @('-Network', '-PassGitHubToken') : @()
+          ./rust/parity/parity.ps1 -Lockstep -Bin "bin/skills-rust-${{ runner.os }}/$exe" -OtherBin "bin/skills-csharp-${{ runner.os }}/$exe" @net
+
+  # Both ports must stay compatible with the reference CLI.
+  compat:
+    name: Compatibility (${{ matrix.os }})
+    needs: [rust, dotnet]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: vercel-labs/skills
+          ref: ${{ env.REFERENCE_REF }}
+          path: reference
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the reference CLI
+        id: reference
+        working-directory: reference
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: skills-*-${{ runner.os }}
+          path: bin
+      - name: Make binaries executable
+        if: runner.os != 'Windows'
+        run: chmod +x bin/*/skills
+      - name: Rust port vs reference
+        id: rust-compat
+        shell: pwsh
+        run: |
+          $exe = $IsWindows ? 'skills.exe' : 'skills'
+          $net = $env:PARITY_NETWORK -eq 'true' ? @('-Network', '-PassGitHubToken') : @()
+          ./rust/parity/parity.ps1 -Reference reference -Bin "bin/skills-rust-${{ runner.os }}/$exe" @net
+      # Runs even when the Rust comparison failed, as long as the setup worked.
+      - name: C# port vs reference
+        if: ${{ !cancelled() && steps.reference.outcome == 'success' && steps.rust-compat.outcome != 'skipped' }}
+        shell: pwsh
+        run: |
+          $exe = $IsWindows ? 'skills.exe' : 'skills'
+          $net = $env:PARITY_NETWORK -eq 'true' ? @('-Network', '-PassGitHubToken') : @()
+          ./dotnet/parity/parity.ps1 -Reference reference -Bin "bin/skills-csharp-${{ runner.os }}/$exe" @net

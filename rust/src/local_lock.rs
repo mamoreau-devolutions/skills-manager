@@ -183,7 +183,7 @@ fn collect_files(
     current: &str,
     out: &mut Vec<(String, Vec<u8>)>,
 ) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(current)? {
+    for entry in crate::sys::read_dir(current)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
         let full = join(&[current, name.as_str()]);

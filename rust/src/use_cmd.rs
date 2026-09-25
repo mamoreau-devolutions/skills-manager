@@ -33,12 +33,14 @@ pub struct UseOptions {
 enum UseSkill {
     Files {
         name: String,
+        description: String,
         directory_name: String,
         raw_content: String,
         files: Vec<SnapshotFile>,
     },
     Disk {
         name: String,
+        description: String,
         directory_name: String,
         raw_content: Option<String>,
         path: String,
@@ -46,6 +48,9 @@ enum UseSkill {
 }
 
 pub struct Materialized {
+    /// The selected skill's name and description (as parsed from SKILL.md).
+    pub name: String,
+    pub description: String,
     pub temp_root: String,
     pub skill_dir: String,
     pub skill_md: String,
@@ -170,15 +175,15 @@ fn unsupported_agent_error(a: &str) -> String {
     )
 }
 
-fn multiple_error(source: &str, names: &[String]) -> String {
+fn multiple_error(command: &str, source: &str, names: &[String]) -> String {
     let first = names.first().cloned().unwrap_or_else(|| "<skill>".into());
     let mut lines =
         vec!["This source contains multiple skills. Specify exactly one skill:".to_string()];
     lines.extend(names.iter().map(|n| format!("  - {}", n)));
     lines.push(String::new());
     lines.push(format!(
-        "Examples:\n  skills use {}@{}\n  skills use {} --skill {}",
-        source, first, source, first
+        "Examples:\n  skills {} {}@{}\n  skills {} {} --skill {}",
+        command, source, first, command, source, first
     ));
     lines.join("\n")
 }
@@ -205,7 +210,12 @@ fn resolve_selector(
     Ok(opt_sel.or(source_sel).map(|s| s.to_string()))
 }
 
-fn select_skill(skills: &[Skill], selector: Option<&str>, source: &str) -> Result<Skill, String> {
+fn select_skill(
+    skills: &[Skill],
+    selector: Option<&str>,
+    source: &str,
+    command: &str,
+) -> Result<Skill, String> {
     if skills.is_empty() {
         return Err(
             "No valid skills found. Skills require a SKILL.md with name and description.".into(),
@@ -216,6 +226,7 @@ fn select_skill(skills: &[Skill], selector: Option<&str>, source: &str) -> Resul
             return Ok(skills[0].clone());
         }
         return Err(multiple_error(
+            command,
             source,
             &skills
                 .iter()
@@ -246,6 +257,7 @@ fn select_well_known(
     skills: &[WellKnownSkill],
     selector: Option<&str>,
     source: &str,
+    command: &str,
 ) -> Result<UseSkill, String> {
     if skills.is_empty() {
         return Err("No skills found at this URL. Make sure the server has a /.well-known/agent-skills/index.json or /.well-known/skills/index.json file.".into());
@@ -254,6 +266,7 @@ fn select_well_known(
         None => {
             if skills.len() != 1 {
                 return Err(multiple_error(
+                    command,
                     source,
                     &skills
                         .iter()
@@ -290,6 +303,7 @@ fn select_well_known(
     let s = chosen[0];
     Ok(UseSkill::Files {
         name: s.name.clone(),
+        description: s.description.clone(),
         directory_name: s.install_name.clone(),
         raw_content: s.content.clone(),
         files: s.files.clone(),
@@ -307,7 +321,7 @@ fn write_safe_file(dir: &str, rel: &str, contents: &[u8]) -> std::io::Result<()>
 
 fn copy_skill_directory(src: &str, dest: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
-    for e in std::fs::read_dir(src)? {
+    for e in crate::sys::read_dir(src)? {
         let e = e?;
         let name = e.file_name().to_string_lossy().to_string();
         let ft = e.file_type()?;
@@ -342,7 +356,7 @@ fn copy_skill_directory(src: &str, dest: &str) -> std::io::Result<()> {
 }
 
 fn contains_supporting_files(root: &str, current: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(current) else {
+    let Ok(entries) = crate::sys::read_dir(current) else {
         return false;
     };
     for e in entries.flatten() {
@@ -364,17 +378,27 @@ fn contains_supporting_files(root: &str, current: &str) -> bool {
 
 fn materialize(skill: &UseSkill) -> Result<Materialized, String> {
     let temp_root = sys::mkdtemp("skills-use-").map_err(|e| e.to_string())?;
-    let (name, dir_name) = match skill {
+    let result = materialize_into(temp_root.clone(), skill);
+    if result.is_err() {
+        let _ = cleanup_temp_dir(&temp_root);
+    }
+    result
+}
+
+fn materialize_into(temp_root: String, skill: &UseSkill) -> Result<Materialized, String> {
+    let (name, description, dir_name) = match skill {
         UseSkill::Files {
             name,
+            description,
             directory_name,
             ..
         }
         | UseSkill::Disk {
             name,
+            description,
             directory_name,
             ..
-        } => (name, directory_name),
+        } => (name, description, directory_name),
     };
     let skill_dir = join(&[
         temp_root.as_str(),
@@ -407,11 +431,135 @@ fn materialize(skill: &UseSkill) -> Result<Materialized, String> {
     };
     let has = contains_supporting_files(&skill_dir, &skill_dir);
     Ok(Materialized {
+        name: name.clone(),
+        description: description.clone(),
         temp_root,
         skill_dir,
         skill_md,
         has_supporting_files: has,
     })
+}
+
+/// Resolve `source` (plus an optional `--skill` selector) to exactly one
+/// skill and materialize it into a fresh temp directory. Shared by `skills use`
+/// and `skills preview`; `command` names the subcommand in the "multiple
+/// skills" error examples. Any clone/download temp directory is removed before
+/// returning; the caller owns `Materialized::temp_root`.
+pub fn resolve_skill(
+    source: &str,
+    skill: Option<&str>,
+    full_depth: bool,
+    command: &str,
+) -> Result<Materialized, String> {
+    let mut clone_temp: Option<String> = None;
+    let result = (|| -> Result<Materialized, String> {
+        let parsed = parse_source(source)?;
+        let selector = resolve_selector(parsed.skill_filter.as_deref(), skill)?;
+        let include_internal = selector.is_some();
+        let opts = DiscoverOptions {
+            include_internal,
+            full_depth,
+            include_duplicate_names: false,
+        };
+
+        let selected: UseSkill = if parsed.kind == "well-known" {
+            let skills = wellknown::fetch_all_skills(&parsed.url, include_internal)
+                .map_err(|e| e.to_string())?;
+            if !skills.is_empty() {
+                select_well_known(&skills, selector.as_deref(), source, command)?
+            } else {
+                let d = download_source(&parsed.url, DownloadOptions::default())?;
+                clone_temp = Some(d.temp_dir.clone());
+                let skills = discover_skills(&d.root_dir, None, opts)?;
+                let s = select_skill(&skills, selector.as_deref(), source, command)?;
+                UseSkill::Disk {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    directory_name: s.name.clone(),
+                    raw_content: s.raw_content.clone(),
+                    path: s.path.clone(),
+                }
+            }
+        } else {
+            let mut blob_used = false;
+            let skills: Vec<Skill> = if parsed.kind == "download" {
+                let d = download_source(&parsed.url, DownloadOptions::default())?;
+                clone_temp = Some(d.temp_dir.clone());
+                discover_skills(&d.root_dir, None, opts)?
+            } else if parsed.kind == "local" {
+                let local = parsed.local_path.clone().unwrap_or_default();
+                if !std::path::Path::new(&local).exists() {
+                    return Err(format!("Local path does not exist: {}", local));
+                }
+                discover_skills(&local, parsed.subpath.as_deref(), opts)?
+            } else if parsed.kind == "github" && !full_depth {
+                let mut blob = None;
+                if let Some(or) = get_owner_repo(&parsed) {
+                    let owner = or.split('/').next().unwrap_or("").to_lowercase();
+                    if BLOB_ALLOWED_OWNERS.contains(&owner.as_str()) {
+                        blob = try_blob_install(
+                            &or,
+                            &BlobOptions {
+                                subpath: parsed.subpath.as_deref(),
+                                skill_filter: selector.as_deref(),
+                                r#ref: parsed.r#ref.as_deref(),
+                                use_token: true,
+                                include_internal,
+                            },
+                        );
+                    }
+                }
+                match blob {
+                    Some(b) => {
+                        blob_used = true;
+                        b.skills
+                    }
+                    None => {
+                        let t = clone_repo(&parsed.url, parsed.r#ref.as_deref())
+                            .map_err(|e| e.message)?;
+                        clone_temp = Some(t.clone());
+                        discover_skills(&t, parsed.subpath.as_deref(), opts)?
+                    }
+                }
+            } else {
+                let t = clone_repo(&parsed.url, parsed.r#ref.as_deref()).map_err(|e| e.message)?;
+                clone_temp = Some(t.clone());
+                discover_skills(&t, parsed.subpath.as_deref(), opts)?
+            };
+            let s = select_skill(&skills, selector.as_deref(), source, command)?;
+            match (&s.blob, blob_used) {
+                (Some(b), true) => {
+                    let raw = s.raw_content.clone().unwrap_or_else(|| {
+                        b.files
+                            .iter()
+                            .find(|f| f.path.to_lowercase() == "skill.md")
+                            .map(|f| String::from_utf8_lossy(&f.contents).into_owned())
+                            .unwrap_or_default()
+                    });
+                    UseSkill::Files {
+                        name: s.name.clone(),
+                        description: s.description.clone(),
+                        directory_name: s.name.clone(),
+                        raw_content: raw,
+                        files: b.files.clone(),
+                    }
+                }
+                _ => UseSkill::Disk {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    directory_name: s.name.clone(),
+                    raw_content: s.raw_content.clone(),
+                    path: s.path.clone(),
+                },
+            }
+        };
+        materialize(&selected)
+    })();
+
+    if let Some(t) = clone_temp.take() {
+        let _ = cleanup_temp_dir(&t);
+    }
+    result
 }
 
 fn fail(message: &str) -> ! {
@@ -463,115 +611,12 @@ pub fn run_use(source_args: &[String], options: &UseOptions, parse_errors: &[Str
         }
     }
 
-    let source = &source_args[0];
-    let mut clone_temp: Option<String> = None;
-    let result = (|| -> Result<Materialized, String> {
-        let parsed = parse_source(source)?;
-        let selector = resolve_selector(parsed.skill_filter.as_deref(), options.skill.as_deref())?;
-        let include_internal = selector.is_some();
-        let opts = DiscoverOptions {
-            include_internal,
-            full_depth: options.full_depth,
-            include_duplicate_names: false,
-        };
-
-        let selected: UseSkill = if parsed.kind == "well-known" {
-            let skills = match wellknown::fetch_all_skills(&parsed.url, include_internal) {
-                Ok(s) => s,
-                Err(e) => fail(&e.to_string()),
-            };
-            if !skills.is_empty() {
-                select_well_known(&skills, selector.as_deref(), source)?
-            } else {
-                let d = download_source(&parsed.url, DownloadOptions::default())?;
-                clone_temp = Some(d.temp_dir.clone());
-                let skills = discover_skills(&d.root_dir, None, opts)?;
-                let s = select_skill(&skills, selector.as_deref(), source)?;
-                UseSkill::Disk {
-                    name: s.name.clone(),
-                    directory_name: s.name.clone(),
-                    raw_content: s.raw_content.clone(),
-                    path: s.path.clone(),
-                }
-            }
-        } else {
-            let mut blob_used = false;
-            let skills: Vec<Skill> = if parsed.kind == "download" {
-                let d = download_source(&parsed.url, DownloadOptions::default())?;
-                clone_temp = Some(d.temp_dir.clone());
-                discover_skills(&d.root_dir, None, opts)?
-            } else if parsed.kind == "local" {
-                let local = parsed.local_path.clone().unwrap_or_default();
-                if !std::path::Path::new(&local).exists() {
-                    fail(&format!("Local path does not exist: {}", local));
-                }
-                discover_skills(&local, parsed.subpath.as_deref(), opts)?
-            } else if parsed.kind == "github" && !options.full_depth {
-                let mut blob = None;
-                if let Some(or) = get_owner_repo(&parsed) {
-                    let owner = or.split('/').next().unwrap_or("").to_lowercase();
-                    if BLOB_ALLOWED_OWNERS.contains(&owner.as_str()) {
-                        blob = try_blob_install(
-                            &or,
-                            &BlobOptions {
-                                subpath: parsed.subpath.as_deref(),
-                                skill_filter: selector.as_deref(),
-                                r#ref: parsed.r#ref.as_deref(),
-                                use_token: true,
-                                include_internal,
-                            },
-                        );
-                    }
-                }
-                match blob {
-                    Some(b) => {
-                        blob_used = true;
-                        b.skills
-                    }
-                    None => {
-                        let t = clone_repo(&parsed.url, parsed.r#ref.as_deref())
-                            .map_err(|e| e.message)?;
-                        clone_temp = Some(t.clone());
-                        discover_skills(&t, parsed.subpath.as_deref(), opts)?
-                    }
-                }
-            } else {
-                let t = clone_repo(&parsed.url, parsed.r#ref.as_deref()).map_err(|e| e.message)?;
-                clone_temp = Some(t.clone());
-                discover_skills(&t, parsed.subpath.as_deref(), opts)?
-            };
-            let s = select_skill(&skills, selector.as_deref(), source)?;
-            match (&s.blob, blob_used) {
-                (Some(b), true) => {
-                    let raw = s.raw_content.clone().unwrap_or_else(|| {
-                        b.files
-                            .iter()
-                            .find(|f| f.path.to_lowercase() == "skill.md")
-                            .map(|f| String::from_utf8_lossy(&f.contents).into_owned())
-                            .unwrap_or_default()
-                    });
-                    UseSkill::Files {
-                        name: s.name.clone(),
-                        directory_name: s.name.clone(),
-                        raw_content: raw,
-                        files: b.files.clone(),
-                    }
-                }
-                _ => UseSkill::Disk {
-                    name: s.name.clone(),
-                    directory_name: s.name.clone(),
-                    raw_content: s.raw_content.clone(),
-                    path: s.path.clone(),
-                },
-            }
-        };
-        materialize(&selected)
-    })();
-
-    if let Some(t) = clone_temp.take() {
-        let _ = cleanup_temp_dir(&t);
-    }
-    let m = match result {
+    let m = match resolve_skill(
+        &source_args[0],
+        options.skill.as_deref(),
+        options.full_depth,
+        "use",
+    ) {
         Ok(m) => m,
         Err(e) => fail(&e),
     };

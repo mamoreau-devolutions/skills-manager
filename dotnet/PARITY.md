@@ -87,6 +87,16 @@ differences. The entries that are specific to .NET are marked.
   build. It takes about 35 ms with the Rust binary and about 220 ms with the
   built npm CLI (`node bin/cli.mjs`).
 
+## Extensions
+
+Features the ports add on top of the reference CLI (`preview`, `validate`,
+`add --pin`, `update --dry-run/--force/--unpin`, `gh skill` interop) are
+described in [`docs/EXTENSIONS.md`](../docs/EXTENSIONS.md). They are additive:
+without them, output matches the reference CLI except for the help screens,
+which list the new commands and flags. The parity harness skips the extension
+cases and the help screens in reference mode; `parity.ps1 -Lockstep` checks
+them between the Rust and C# ports.
+
 ## Not ported (unused by the CLI)
 
 - The provider registry (`providers/registry.ts`),

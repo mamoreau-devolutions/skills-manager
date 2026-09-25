@@ -141,6 +141,24 @@ internal sealed class Proc
         return new ProcOutput(p.ExitCode, outTask.GetAwaiter().GetResult(), errTask.GetAwaiter().GetResult());
     }
 
+    /// Run with stdout/stderr inherited, feeding `input` on stdin (a pager).
+    /// A child that exits early (closing the pipe) is not an error.
+    public int RunWithStdin(byte[] input)
+    {
+        using var p = Start(StartInfo(redirectStdin: true, redirectOut: false));
+        try
+        {
+            p.StandardInput.BaseStream.Write(input, 0, input.Length);
+            p.StandardInput.Close();
+        }
+        catch (IOException)
+        {
+            // the pager quit before reading everything
+        }
+        p.WaitForExit();
+        return p.ExitCode;
+    }
+
     private static async Task<byte[]> ReadAllAsync(Stream s)
     {
         using var ms = new MemoryStream();

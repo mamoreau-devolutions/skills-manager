@@ -325,7 +325,7 @@ fn copy_dir_all(src: &str, dest: &str) -> std::io::Result<()> {
         ));
     }
     std::fs::create_dir_all(dest)?;
-    for e in std::fs::read_dir(src)? {
+    for e in crate::sys::read_dir(src)? {
         let e = e?;
         let name = e.file_name().to_string_lossy().to_string();
         let s = join(&[src, name.as_str()]);

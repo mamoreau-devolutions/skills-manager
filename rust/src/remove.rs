@@ -85,7 +85,7 @@ pub fn remove_command(mut skill_names: Vec<String>, mut options: RemoveOptions) 
     spinner.start("Scanning for installed skills…");
 
     let mut found: Vec<String> = Vec::new();
-    let mut scan_dir = |dir: &str| match std::fs::read_dir(dir) {
+    let mut scan_dir = |dir: &str| match crate::sys::read_dir(dir) {
         Ok(entries) => {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();

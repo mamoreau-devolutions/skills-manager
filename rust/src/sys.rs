@@ -146,6 +146,28 @@ pub fn homedir() -> String {
     }
 }
 
+/// `fs.readdir` order: libuv sorts scandir results with strcmp on Unix (byte
+/// order of the names), while on Windows it returns the file system's order,
+/// which is also what `std::fs::read_dir` yields there. A drop-in replacement
+/// for `std::fs::read_dir` wherever the reference CLI iterates `readdir`.
+pub fn read_dir<P: AsRef<std::path::Path>>(
+    path: P,
+) -> std::io::Result<std::vec::IntoIter<std::io::Result<std::fs::DirEntry>>> {
+    #[allow(unused_mut)]
+    let mut entries: Vec<std::io::Result<std::fs::DirEntry>> = std::fs::read_dir(path)?.collect();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        entries.sort_by(|a, b| match (a, b) {
+            (Ok(a), Ok(b)) => a.file_name().as_bytes().cmp(b.file_name().as_bytes()),
+            (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+            (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+            (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+        });
+    }
+    Ok(entries.into_iter())
+}
+
 /// `os.tmpdir()`
 pub fn tmpdir() -> String {
     #[cfg(windows)]

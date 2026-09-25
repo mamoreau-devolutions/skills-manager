@@ -2,9 +2,11 @@
 
 use crate::agents::{self, agent, AgentType};
 use crate::color::ansi::{BOLD, CYAN, DIM, RESET, YELLOW};
+use crate::gh_installed::{read_gh_origin, short_ref, GhOrigin};
 use crate::installer::{list_installed_skills, sanitize_name, InstalledSkill};
 use crate::local_lock::read_local_lock;
 use crate::outln;
+use crate::pinning::pinned_ref;
 use crate::sanitize::{js_len, js_pad_end, sanitize_metadata};
 use crate::skill_lock::get_all_locked_skills;
 use crate::sys;
@@ -74,6 +76,66 @@ fn kebab_to_title(s: &str) -> String {
         .join(" ")
 }
 
+/// The `Source:` value: the lock's source (plus ` (pinned <ref>)` for a
+/// pinned entry), a `gh skill` origin for untracked skills, else `local`.
+fn source_label(entry: Option<&Value>, source: Option<&str>, skill_dir: &str) -> String {
+    let base = match (entry, source) {
+        (_, Some(s)) => sanitize_metadata(s),
+        (None, None) => match read_gh_origin(skill_dir) {
+            Some(origin) => return sanitize_metadata(&origin.list_label()),
+            None => "local".into(),
+        },
+        (Some(_), None) => "local".into(),
+    };
+    match entry.and_then(pinned_ref) {
+        Some(r) => format!("{} (pinned {})", base, sanitize_metadata(&r)),
+        None => base,
+    }
+}
+
+/// `list --json` extension keys: `ref`/`pinned` for pinned lock entries, the
+/// origin plus `managedBy: "gh"` for skills installed by `gh skill`.
+fn add_extension_json(o: &mut Map<String, Value>, entry: Option<&Value>, skill_dir: &str) {
+    if let Some(e) = entry {
+        if let Some(r) = pinned_ref(e) {
+            o.insert("ref".into(), Value::String(r));
+            o.insert("pinned".into(), Value::Bool(true));
+        }
+        return;
+    }
+    let Some(origin) = read_gh_origin(skill_dir) else {
+        return;
+    };
+    let source = origin.source();
+    match origin {
+        GhOrigin::GitHub {
+            url,
+            git_ref,
+            pinned,
+            ..
+        } => {
+            o.insert("source".into(), Value::String(source));
+            o.insert("sourceUrl".into(), Value::String(url));
+            o.insert("sourceType".into(), Value::String("github".into()));
+            o.insert(
+                "ref".into(),
+                git_ref
+                    .as_deref()
+                    .map(|r| Value::String(short_ref(r)))
+                    .unwrap_or(Value::Null),
+            );
+            o.insert("pinned".into(), Value::Bool(pinned.is_some()));
+            o.insert("managedBy".into(), Value::String("gh".into()));
+        }
+        GhOrigin::Local { path } => {
+            o.insert("source".into(), Value::String(path));
+            o.insert("sourceUrl".into(), Value::Null);
+            o.insert("sourceType".into(), Value::String("local".into()));
+            o.insert("managedBy".into(), Value::String("gh".into()));
+        }
+    }
+}
+
 pub fn run_list(args: &[String]) {
     let options = parse_list_options(args);
     let scope = options.global;
@@ -139,7 +201,7 @@ pub fn run_list(args: &[String]) {
             .iter()
             .map(|s| {
                 let e = get_lock_entry(&s.name);
-                json!({
+                let mut v = json!({
                     "name": s.name,
                     "path": s.canonical_path,
                     "scope": s.scope,
@@ -147,7 +209,11 @@ pub fn run_list(args: &[String]) {
                     "source": lock_str(e, "source"),
                     "sourceUrl": lock_str(e, "sourceUrl"),
                     "sourceType": lock_str(e, "sourceType"),
-                })
+                });
+                if let Value::Object(o) = &mut v {
+                    add_extension_json(o, e, &s.canonical_path);
+                }
+                v
             })
             .collect();
         outln!(
@@ -188,13 +254,12 @@ pub fn run_list(args: &[String]) {
         };
         let padded_name = js_pad_end(&sanitize_metadata(&skill.name), max_name);
         let padded_path = js_pad_end(&short, max_path);
-        let source = get_lock_entry(&skill.name)
+        let entry = get_lock_entry(&skill.name);
+        let source = entry
             .and_then(|e| e.get("source"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
-        let source_label = source
-            .map(sanitize_metadata)
-            .unwrap_or_else(|| "local".into());
+        let source_label = source_label(entry, source, &skill.canonical_path);
         outln!(
             "{}{}{}{} {}{}{}",
             prefix,

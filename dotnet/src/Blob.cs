@@ -58,10 +58,16 @@ internal static partial class Blob
 
     private sealed record BranchResult(RepoTree? Tree, bool RateLimited, bool AuthRetryable);
 
-    private static BranchResult FetchTreeBranch(string ownerRepo, string branch, string? token)
+    /// REST API base for the selected GitHub host (`GH_HOST`).
+    public static string GitHubApiBase()
     {
         var host = GitHubHost.Get();
-        var apiBase = host == "github.com" ? "https://api.github.com" : $"https://{host}/api/v3";
+        return host == "github.com" ? "https://api.github.com" : $"https://{host}/api/v3";
+    }
+
+    private static BranchResult FetchTreeBranch(string ownerRepo, string branch, string? token)
+    {
+        var apiBase = GitHubApiBase();
         var req = HttpRequest.Get($"{apiBase}/repos/{ownerRepo}/git/trees/{UrlUtil.EncodeUriComponent(branch)}?recursive=1")
             .Timeout(FetchTimeout).Header("Accept", "application/vnd.github.v3+json").Header("User-Agent", "skills-cli");
         if (token != null) req.Header("Authorization", $"Bearer {token}");

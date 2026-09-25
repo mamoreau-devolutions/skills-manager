@@ -7,9 +7,11 @@
 use crate::agents::{agents, is_universal_agent};
 use crate::blob::{fetch_repo_tree, get_skill_folder_hash_from_tree};
 use crate::color::ansi::{BOLD, DIM, RESET, TEXT};
+use crate::gh_installed::report_gh_skills;
 use crate::git::{cleanup_temp_dir, clone_repo, get_git_tree_hash};
 use crate::local_lock::{compute_skill_folder_hash, read_local_lock};
 use crate::paths::{self, join};
+use crate::pinning::{pin_action, pinned_ref, print_pinned_notice, unpinned_entry, PinAction};
 use crate::remove::{remove_command, RemoveOptions};
 use crate::sanitize::sanitize_metadata;
 use crate::skill_lock::read_skill_lock;
@@ -48,6 +50,11 @@ pub struct UpdateOptions {
     pub project: bool,
     pub yes: bool,
     pub skills: Option<Vec<String>>,
+    /// Extensions: report without changing anything / reinstall even when
+    /// current / include pinned skills and clear their pin.
+    pub dry_run: bool,
+    pub force: bool,
+    pub unpin: bool,
 }
 
 pub fn parse_update_options(args: &[String]) -> UpdateOptions {
@@ -58,6 +65,9 @@ pub fn parse_update_options(args: &[String]) -> UpdateOptions {
             "-g" | "--global" => o.global = true,
             "-p" | "--project" => o.project = true,
             "-y" | "--yes" => o.yes = true,
+            "--dry-run" => o.dry_run = true,
+            "--force" => o.force = true,
+            "--unpin" => o.unpin = true,
             _ => {
                 if !a.starts_with('-') {
                     positional.push(a.clone());
@@ -78,7 +88,7 @@ pub fn has_project_skills(cwd: Option<&str>) -> bool {
         return true;
     }
     let skills_dir = join(&[dir.as_str(), ".agents", "skills"]);
-    if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+    if let Ok(entries) = crate::sys::read_dir(&skills_dir) {
         for e in entries.flatten() {
             if e.file_type().map(|t| t.is_dir()).unwrap_or(false)
                 && std::path::Path::new(&join(&[
@@ -293,7 +303,7 @@ fn prompt_deletions(source: &str, deleted: &[String], is_global: bool, o: &Updat
     for d in deleted {
         outln!("  {}•{} {}", DIM, RESET, d);
     }
-    if o.yes || !sys::stdin_is_tty() {
+    if o.yes || o.dry_run || !sys::stdin_is_tty() {
         outln!("{}Skipping deletion in non-interactive mode.{}", DIM, RESET);
         return;
     }
@@ -370,7 +380,9 @@ enum WellKnownCheck {
     },
 }
 
-fn check_well_known(base_url: &str, items: &[WellKnownItem]) -> WellKnownCheck {
+/// `force` (update `--force`) marks every tracked skill still in the index as
+/// changed without comparing digests.
+fn check_well_known(base_url: &str, items: &[WellKnownItem], force: bool) -> WellKnownCheck {
     let Some(index) = wellknown::fetch_index(base_url, true) else {
         return WellKnownCheck::Error;
     };
@@ -396,10 +408,11 @@ fn check_well_known(base_url: &str, items: &[WellKnownItem]) -> WellKnownCheck {
         };
         match entry {
             NormalizedEntry::V2 { digest, .. } => {
-                if item.digest.is_empty() || *digest != item.digest {
+                if force || item.digest.is_empty() || *digest != item.digest {
                     changed.push(item.name.clone());
                 }
             }
+            NormalizedEntry::V1 { .. } if force => changed.push(item.name.clone()),
             NormalizedEntry::V1 { .. } => needs_content.push(item),
         }
     }
@@ -480,12 +493,21 @@ fn spawn_add(args: &[String], github_pin: bool) -> bool {
     matches!(cmd.output_inherit_stdin(), Ok(o) if o.success())
 }
 
+struct WellKnownOutcome {
+    ok: usize,
+    fail: usize,
+    changed_any: bool,
+    /// `--dry-run`: changed skills as (name, base URL), not reinstalled.
+    pending: Vec<(String, String)>,
+}
+
 fn process_well_known_updates(
     groups: &[(String, Vec<WellKnownItem>)],
     is_global: bool,
     o: &UpdateOptions,
-) -> (usize, usize, bool) {
+) -> WellKnownOutcome {
     let (mut ok, mut fail, mut changed_any) = (0, 0, false);
+    let mut pending: Vec<(String, String)> = Vec::new();
     for (base_url, items) in groups {
         out!(
             "\r{}Checking skills from source: {}{}\x1b[K\n",
@@ -493,7 +515,7 @@ fn process_well_known_updates(
             base_url,
             RESET
         );
-        match check_well_known(base_url, items) {
+        match check_well_known(base_url, items, o.force) {
             WellKnownCheck::Error => {
                 outln!(
                     "  {}✗ Failed to check skills from {}{}",
@@ -514,6 +536,10 @@ fn process_well_known_updates(
                 prompt_deletions(base_url, &removed, is_global, o);
                 print_new_skills(base_url, &new_skills, is_global);
                 if changed.is_empty() {
+                    continue;
+                }
+                if o.dry_run {
+                    pending.extend(changed.into_iter().map(|n| (n, base_url.clone())));
                     continue;
                 }
                 if cli_entry().is_none() {
@@ -562,7 +588,40 @@ fn process_well_known_updates(
             }
         }
     }
-    (ok, fail, changed_any)
+    WellKnownOutcome {
+        ok,
+        fail,
+        changed_any,
+        pending,
+    }
+}
+
+/// `--dry-run` result: `Found N <scope> update(s)`, one bullet per update,
+/// and the no-changes note.
+fn print_dry_run_updates(scope: &str, pending: &[(String, String)]) {
+    outln!(
+        "{}Found {} {} update(s){}",
+        TEXT,
+        pending.len(),
+        scope,
+        RESET
+    );
+    outln!();
+    for (name, source) in pending {
+        outln!(
+            "  • {} {}({}){}",
+            sanitize_metadata(name),
+            DIM,
+            sanitize_metadata(source),
+            RESET
+        );
+    }
+    outln!();
+    outln!(
+        "{}Dry run: no changes made. Run skills update without --dry-run to apply.{}",
+        DIM,
+        RESET
+    );
 }
 
 fn discovered_locations(
@@ -604,17 +663,31 @@ fn update_global_skills(o: &UpdateOptions) -> (usize, usize, usize) {
                 RESET
             );
         }
-        return (0, 0, 0);
+        let gh = report_gh_skills(true, &skills, &o.skills);
+        return (0, 0, gh);
     }
 
     let mut updates: Vec<(String, Value)> = Vec::new();
     let mut skipped: Vec<SkippedSkill> = Vec::new();
     let mut checkable: Vec<(String, Value)> = Vec::new();
     let mut wk_groups: Vec<(String, Vec<WellKnownItem>)> = Vec::new();
+    let mut pinned: Vec<(String, String)> = Vec::new();
+    let mut unpinned: Vec<(String, Value)> = Vec::new();
 
     for (name, entry) in &skills {
         if !matches_skill_filter(name, &o.skills) {
             continue;
+        }
+        match pin_action(entry, o.force, o.unpin) {
+            PinAction::Skip(r) => {
+                pinned.push((name.clone(), r));
+                continue;
+            }
+            PinAction::Unpin => {
+                unpinned.push((name.clone(), unpinned_entry(entry)));
+                continue;
+            }
+            PinAction::Check | PinAction::Force(_) => {}
         }
         if s(entry, "sourceType").as_deref() == Some("well-known") {
             if let (Some(base), Some(digest)) = (
@@ -647,9 +720,10 @@ fn update_global_skills(o: &UpdateOptions) -> (usize, usize, usize) {
     }
 
     let wk_count: usize = wk_groups.iter().map(|(_, v)| v.len()).sum();
-    let (wk_ok, wk_fail, wk_changed) = process_well_known_updates(&wk_groups, true, o);
-    ok += wk_ok;
-    fail += wk_fail;
+    let wk = process_well_known_updates(&wk_groups, true, o);
+    ok += wk.ok;
+    fail += wk.fail;
+    let wk_changed = wk.changed_any;
 
     let mut by_source: Vec<(String, Vec<(String, Value)>)> = Vec::new();
     for item in &checkable {
@@ -704,7 +778,10 @@ fn update_global_skills(o: &UpdateOptions) -> (usize, usize, usize) {
                         for (name, entry) in items {
                             let sp = s(entry, "skillPath").unwrap_or_default();
                             if let Some(latest) = get_skill_folder_hash_from_tree(&tree, &sp) {
-                                if Some(latest.as_str()) != s(entry, "skillFolderHash").as_deref() {
+                                if o.force
+                                    || Some(latest.as_str())
+                                        != s(entry, "skillFolderHash").as_deref()
+                                {
                                     updates.push((name.clone(), entry.clone()));
                                 }
                             }
@@ -755,7 +832,7 @@ fn update_global_skills(o: &UpdateOptions) -> (usize, usize, usize) {
                         .ok()
                 };
                 let relocated = Some(sp.as_str()) != s(entry, "skillPath").as_deref();
-                if relocated || latest.as_ref().map(|l| *l != hash).unwrap_or(false) {
+                if relocated || o.force || latest.as_ref().map(|l| *l != hash).unwrap_or(false) {
                     let mut e = entry.clone();
                     e["skillPath"] = Value::String(sp.clone());
                     updates.push((name.clone(), e));
@@ -774,36 +851,56 @@ fn update_global_skills(o: &UpdateOptions) -> (usize, usize, usize) {
     if !checkable.is_empty() {
         out!("\r\x1b[K");
     }
-    let checked = checkable.len() + skipped.len() + wk_count;
-    if checkable.is_empty() && skipped.is_empty() && wk_count == 0 {
-        if o.skills.is_none() {
+    let nothing_to_check =
+        checkable.is_empty() && skipped.is_empty() && wk_count == 0 && unpinned.is_empty();
+    let mut checked = if nothing_to_check {
+        pinned.len()
+    } else {
+        checkable.len() + skipped.len() + wk_count + unpinned.len() + pinned.len()
+    };
+    // `--unpin`: pinned skills are reinstalled from their default branch.
+    updates.extend(unpinned);
+    let has_updates = !updates.is_empty() || (o.dry_run && !wk.pending.is_empty());
+    if nothing_to_check {
+        if pinned.is_empty() && o.skills.is_none() {
             outln!("{}No global skills to check.{}", DIM, RESET);
         }
-        return (ok, fail, 0);
-    }
-    if checkable.is_empty() && skipped.is_empty() {
-        if !wk_changed {
+    } else if !has_updates {
+        if !(checkable.is_empty() && !skipped.is_empty()) && !wk_changed {
             outln!("{}✓ All global skills are up to date{}", TEXT, RESET);
         }
-        return (ok, fail, checked);
+    } else if o.dry_run {
+        let mut pending = wk.pending.clone();
+        pending.extend(
+            updates
+                .iter()
+                .map(|(n, e)| (n.clone(), s(e, "source").unwrap_or_default())),
+        );
+        print_dry_run_updates("global", &pending);
+    } else {
+        let (a, b) = reinstall_global_updates(&updates);
+        ok += a;
+        fail += b;
     }
-    if checkable.is_empty() && !skipped.is_empty() {
-        print_skipped_skills(&skipped);
-        return (ok, fail, checked);
-    }
-    if updates.is_empty() {
-        if !wk_changed {
-            outln!("{}✓ All global skills are up to date{}", TEXT, RESET);
-        }
-        return (ok, fail, checked);
-    }
+    print_pinned_notice(&pinned);
+    checked += report_gh_skills(true, &skills, &o.skills);
+    print_skipped_skills(&skipped);
+    (ok, fail, checked)
+}
 
+fn reinstall_global_updates(updates: &[(String, Value)]) -> (usize, usize) {
+    let (mut ok, mut fail) = (0usize, 0usize);
     outln!("{}Found {} global update(s){}", TEXT, updates.len(), RESET);
     outln!();
-    for (name, entry) in &updates {
+    for (name, entry) in updates {
         let safe = sanitize_metadata(name);
         outln!("{}Updating {}…{}", TEXT, safe, RESET);
-        let use_entry = UpdateSourceEntry::from_json(entry);
+        // `--force` on a pinned skill: reinstall at its ref and keep it pinned.
+        let pin = pinned_ref(entry);
+        let mut use_entry = UpdateSourceEntry::from_json(entry);
+        if pin.is_some() {
+            use_entry.r#ref = None;
+        }
         let Some(install_url) = build_update_install_source(&use_entry) else {
             fail += 1;
             outln!("  {}✗ Cannot update {}: lock file is missing sourceUrl for this generic Git source{}", DIM, safe, RESET);
@@ -820,6 +917,10 @@ fn update_global_skills(o: &UpdateOptions) -> (usize, usize, usize) {
             continue;
         }
         let mut args: Vec<String> = vec!["add".into(), install_url, "--skill".into(), name.clone()];
+        if let Some(r) = pin {
+            args.push("--pin".into());
+            args.push(r);
+        }
         if should_use_full_depth_for_update(&use_entry) {
             args.push("--full-depth".into());
         }
@@ -833,8 +934,7 @@ fn update_global_skills(o: &UpdateOptions) -> (usize, usize, usize) {
             outln!("  {}✗ Failed to update {}{}", DIM, safe, RESET);
         }
     }
-    print_skipped_skills(&skipped);
-    (ok, fail, checked)
+    (ok, fail)
 }
 
 fn print_legacy_project_skills(legacy: &[&ProjectSkill]) {
@@ -854,9 +954,10 @@ fn print_legacy_project_skills(legacy: &[&ProjectSkill]) {
 }
 
 fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
-    let project = get_project_skills_for_update(&o.skills);
+    let all = get_project_skills_for_update(&o.skills);
+    let local_lock = read_local_lock(None);
     let (mut ok, mut fail) = (0usize, 0usize);
-    if project.is_empty() {
+    if all.is_empty() {
         if o.skills.is_none() {
             outln!("{}No project skills to update.{}", DIM, RESET);
             outln!(
@@ -867,7 +968,31 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
                 RESET
             );
         }
-        return (0, 0, 0);
+        let gh = report_gh_skills(false, &local_lock.skills, &o.skills);
+        return (0, 0, gh);
+    }
+    let total = all.len();
+
+    // Pinned skills are skipped (listed in a notice) unless --force/--unpin;
+    // --unpin reinstalls them from their default branch.
+    let mut pinned: Vec<(String, String)> = Vec::new();
+    let mut project: Vec<ProjectSkill> = Vec::new();
+    let mut lock_skills = local_lock.skills.clone();
+    for mut sk in all {
+        match pin_action(&sk.entry, o.force, o.unpin) {
+            PinAction::Skip(r) => pinned.push((sk.name, r)),
+            PinAction::Unpin => {
+                sk.entry = unpinned_entry(&sk.entry);
+                lock_skills.insert(sk.name.clone(), sk.entry.clone());
+                project.push(sk);
+            }
+            PinAction::Check | PinAction::Force(_) => project.push(sk),
+        }
+    }
+    if project.is_empty() {
+        print_pinned_notice(&pinned);
+        let gh = report_gh_skills(false, &local_lock.skills, &o.skills);
+        return (0, 0, total + gh);
     }
 
     let mut wk_groups: Vec<(String, Vec<WellKnownItem>)> = Vec::new();
@@ -906,44 +1031,51 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
 
     if updatable.is_empty() && wk_count == 0 {
         outln!("{}No project skills can be updated in place.{}", DIM, RESET);
+        print_pinned_notice(&pinned);
+        let gh = report_gh_skills(false, &local_lock.skills, &o.skills);
         print_legacy_project_skills(&legacy);
-        return (ok, fail, project.len());
+        return (ok, fail, total + gh);
     }
 
-    let cwd = sys::cwd();
-    let mut targets: Vec<String> = Vec::new();
-    let mut has_universal = false;
-    for a in agents() {
-        if is_universal_agent(a.name) {
-            if !has_universal && std::path::Path::new(&join(&[cwd.as_str(), ".agents"])).exists() {
-                has_universal = true;
-            }
-        } else {
-            let root = a.skills_dir.split('/').next().unwrap_or("");
-            if std::path::Path::new(&join(&[cwd.as_str(), root])).exists() {
-                targets.push(a.display_name.to_string());
+    if !o.dry_run {
+        let cwd = sys::cwd();
+        let mut targets: Vec<String> = Vec::new();
+        let mut has_universal = false;
+        for a in agents() {
+            if is_universal_agent(a.name) {
+                if !has_universal
+                    && std::path::Path::new(&join(&[cwd.as_str(), ".agents"])).exists()
+                {
+                    has_universal = true;
+                }
+            } else {
+                let root = a.skills_dir.split('/').next().unwrap_or("");
+                if std::path::Path::new(&join(&[cwd.as_str(), root])).exists() {
+                    targets.push(a.display_name.to_string());
+                }
             }
         }
+        let mut parts: Vec<String> = Vec::new();
+        if has_universal {
+            parts.push("Universal".into());
+        }
+        parts.extend(targets);
+        if !parts.is_empty() {
+            outln!("{}Updating for: {}{}", TEXT, parts.join(", "), RESET);
+        }
+        outln!(
+            "{}Refreshing {} skill(s)…{}",
+            TEXT,
+            updatable.len() + wk_count,
+            RESET
+        );
+        outln!();
     }
-    let mut parts: Vec<String> = Vec::new();
-    if has_universal {
-        parts.push("Universal".into());
-    }
-    parts.extend(targets);
-    if !parts.is_empty() {
-        outln!("{}Updating for: {}{}", TEXT, parts.join(", "), RESET);
-    }
-    outln!(
-        "{}Refreshing {} skill(s)…{}",
-        TEXT,
-        updatable.len() + wk_count,
-        RESET
-    );
-    outln!();
 
-    let (wk_ok, wk_fail, _) = process_well_known_updates(&wk_groups, false, o);
-    ok += wk_ok;
-    fail += wk_fail;
+    let wk = process_well_known_updates(&wk_groups, false, o);
+    ok += wk.ok;
+    fail += wk.fail;
+    let mut pending = wk.pending.clone();
 
     let mut by_source: Vec<(String, Vec<&ProjectSkill>)> = Vec::new();
     for sk in &updatable {
@@ -956,10 +1088,9 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
         }
     }
 
-    let local_lock = read_local_lock(None);
     if !updatable.is_empty() && cli_entry().is_none() {
         outln!("{}✗ CLI entrypoint not found{}", DIM, RESET);
-        return (ok, fail + updatable.len(), project.len());
+        return (ok, fail + updatable.len(), total);
     }
 
     for (_, group) in &by_source {
@@ -968,8 +1099,7 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
             nonempty(first, "sourceUrl").unwrap_or_else(|| s(first, "source").unwrap_or_default());
         let clone_source = build_local_clone_source(&UpdateSourceEntry::from_json(first));
         let r = s(first, "ref");
-        let locked_for_source: Vec<String> = local_lock
-            .skills
+        let locked_for_source: Vec<String> = lock_skills
             .iter()
             .filter(|(_, e)| {
                 nonempty(e, "sourceUrl").unwrap_or_else(|| s(e, "source").unwrap_or_default())
@@ -993,7 +1123,7 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
             Ok(check_and_prompt_for_deletions(
                 &source,
                 &locked_for_source,
-                &local_lock.skills,
+                &lock_skills,
                 false,
                 o,
                 &locations,
@@ -1021,10 +1151,19 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
             let Some(resolved) = res.resolved.get(&sk.name) else {
                 continue;
             };
+            if o.dry_run {
+                pending.push((sk.name.clone(), s(&sk.entry, "source").unwrap_or_default()));
+                continue;
+            }
             let mut entry = sk.entry.clone();
             entry["skillPath"] = Value::String(resolved.clone());
             outln!("{}Updating {}…{}", TEXT, safe, RESET);
-            let use_entry = UpdateSourceEntry::from_json(&entry);
+            // `--force` on a pinned skill: reinstall at its ref and keep it pinned.
+            let pin = pinned_ref(&entry);
+            let mut use_entry = UpdateSourceEntry::from_json(&entry);
+            if pin.is_some() {
+                use_entry.r#ref = None;
+            }
             let Some(install_url) = build_local_update_source(&use_entry) else {
                 fail += 1;
                 outln!("  {}✗ Cannot update {}: skills-lock.json is missing sourceUrl for this generic Git source{}", DIM, safe, RESET);
@@ -1032,6 +1171,10 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
             };
             let mut args: Vec<String> =
                 vec!["add".into(), install_url, "--skill".into(), sk.name.clone()];
+            if let Some(r) = pin {
+                args.push("--pin".into());
+                args.push(r);
+            }
             if let Some(subs) = crate::local_lock::entry_string_array(&sk.entry, "subagents")
                 .filter(|v| !v.is_empty())
             {
@@ -1058,8 +1201,17 @@ fn update_project_skills(o: &UpdateOptions) -> (usize, usize, usize) {
         }
     }
 
+    if o.dry_run {
+        if pending.is_empty() {
+            outln!("{}✓ All project skills are up to date{}", TEXT, RESET);
+        } else {
+            print_dry_run_updates("project", &pending);
+        }
+    }
+    print_pinned_notice(&pinned);
+    let gh = report_gh_skills(false, &local_lock.skills, &o.skills);
     print_legacy_project_skills(&legacy);
-    (ok, fail, project.len())
+    (ok, fail, total + gh)
 }
 
 pub fn run_update(args: &[String]) {
