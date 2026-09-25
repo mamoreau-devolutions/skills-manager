@@ -19,12 +19,21 @@
     release build by default, or any binary passed with -Bin
     (dotnet/parity/parity.ps1 runs these cases against the C# port).
 
+    The ports add features the reference CLI does not have (docs/EXTENSIONS.md).
+    In reference mode, cases marked -Diverges (help screens that list the new
+    commands) and -Ext (the extensions themselves) are skipped. -Lockstep runs
+    every case with the Rust port on one side and the C# port on the other, so
+    the two ports are held to identical behavior, extensions included. It does
+    not need the reference CLI.
+
 .EXAMPLE
     pwsh rust/parity/parity.ps1 -Reference ../skills           # offline cases
 .EXAMPLE
     pwsh rust/parity/parity.ps1 -Reference ../skills -Network  # also GitHub / skills.sh cases
 .EXAMPLE
     pwsh rust/parity/parity.ps1 -Filter add -ShowOutput        # uses $env:SKILLS_REFERENCE
+.EXAMPLE
+    pwsh rust/parity/parity.ps1 -Lockstep                      # Rust port vs C# port
 #>
 [CmdletBinding()]
 param(
@@ -34,8 +43,12 @@ param(
     [string]$Reference = $env:SKILLS_REFERENCE,
     # Only run cases whose name contains this substring.
     [string]$Filter = '',
+    # Compare the Rust port (-Bin) with the C# port (-OtherBin) instead of the reference CLI.
+    [switch]$Lockstep,
     # Path to the port binary (default: the Rust release build).
     [string]$Bin,
+    # Lockstep only: the second port binary (default: the C# build in dotnet/publish).
+    [string]$OtherBin,
     # Print both implementations' full stdout/stderr.
     [switch]$ShowOutput,
     # Keep the sandbox directories for inspection.
@@ -48,21 +61,31 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 $RustDir = Split-Path -Parent $PSScriptRoot
-if (-not $Reference) {
-    throw 'Pass -Reference <checkout of https://github.com/vercel-labs/skills> or set SKILLS_REFERENCE (run pnpm install && pnpm build there first)'
-}
-if (-not (Test-Path (Join-Path $Reference 'src' 'cli.ts'))) {
-    throw "No src/cli.ts under -Reference $Reference; it must be a checkout of https://github.com/vercel-labs/skills"
-}
-$Reference = (Resolve-Path $Reference).Path
-if (-not (Test-Path (Join-Path $Reference 'dist'))) {
-    Write-Warning "No dist/ under $Reference (run pnpm build there); update cases will fail"
-}
+$ExeName = $IsWindows ? 'skills.exe' : 'skills'
 if (-not $Bin) {
-    $Bin = Join-Path $RustDir 'target' 'release' ($IsWindows ? 'skills.exe' : 'skills')
+    $Bin = Join-Path $RustDir 'target' 'release' $ExeName
 }
 if (-not (Test-Path $Bin)) { throw "Port binary not found at $Bin (build the Rust port with cargo build --release, or pass -Bin)" }
-$Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+if ($Lockstep) {
+    if (-not $OtherBin) {
+        $OtherBin = Join-Path (Split-Path -Parent $RustDir) 'dotnet' 'publish' $ExeName
+    }
+    if (-not (Test-Path $OtherBin)) {
+        throw "C# binary not found at $OtherBin (run: dotnet publish dotnet/src/Skills.csproj -c Release -r <rid> -o dotnet/publish, or pass -OtherBin)"
+    }
+} else {
+    if (-not $Reference) {
+        throw 'Pass -Reference <checkout of https://github.com/vercel-labs/skills> or set SKILLS_REFERENCE (run pnpm install && pnpm build there first), or use -Lockstep'
+    }
+    if (-not (Test-Path (Join-Path $Reference 'src' 'cli.ts'))) {
+        throw "No src/cli.ts under -Reference $Reference; it must be a checkout of https://github.com/vercel-labs/skills"
+    }
+    $Reference = (Resolve-Path $Reference).Path
+    if (-not (Test-Path (Join-Path $Reference 'dist'))) {
+        Write-Warning "No dist/ under $Reference (run pnpm build there); update cases will fail"
+    }
+    $Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+}
 
 $SkillTemplate = "---`nname: {0}`ndescription: {1}`n---`n`n# {0}`n`nBody for {0}.`n"
 $Servers = @{ wk = ''; dl = '' }
@@ -261,6 +284,89 @@ $FxControlChars = {
     $src
 }
 
+# ─── Extension fixtures (docs/EXTENSIONS.md; lockstep mode only) ───
+
+# A skills repository with one example of every validation finding, inside a
+# git work tree with one ignored and one unignored agent install directory.
+$FxValidateRepo = {
+    param($sb)
+    $p = $sb.project
+    New-Skill $p 'skills/good' 'good' -Extra @{ 'references/guide.md' = "guide`n"; 'scripts/run.sh' = "echo hi`n" }
+    Write-Text (Join $p 'skills/good/SKILL.md') "---`nname: good`ndescription: A valid skill`nlicense: MIT`nmetadata:`n  author: me`n---`n`n# Good`n`nSee [the guide](references/guide.md) and [top](#good).`n"
+    Write-Text (Join $p 'skills/bad-name/SKILL.md') "---`nname: Bad_Name`ndescription: Uppercase and underscore`n---`nBody`n"
+    Write-Text (Join $p 'skills/mismatch/SKILL.md') "---`nname: other-name`ndescription: Wrong directory`n---`nBody`n"
+    Write-Text (Join $p 'skills/meta/SKILL.md') ("---`r`nname: meta`r`ndescription: Committed after install`r`nversion: 2`r`nmetadata:`r`n  author: me`r`n  github-repo: https://github.com/octo/skills`r`n  github-ref: refs/tags/v1.0`r`n  github-tree-sha: 0123456789abcdef0123456789abcdef01234567`r`n  github-path: skills/meta`r`n---`r`nBody`r`n")
+    Write-Text (Join $p 'skills/meta-only/SKILL.md') "---`nname: meta-only`ndescription: Only install metadata`nmetadata:`n  local-path: /tmp/somewhere`n---`nBody`n"
+    Write-Text (Join $p 'skills/links/SKILL.md') ("---`nname: links`ndescription: Links`nallowed-tools:`n  - Read`n  - Write`n---`n# Links`n`n" +
+        "[ok](references/a.md) [missing](nope.md#section) [outside](../good/SKILL.md) [web](https://example.com/x.md)`n" +
+        "![img](images/missing%20pic.png) [mail](mailto:a@b.c) ``[code](inline.md)```n`n" + '```' + "`n[fenced](fenced.md)`n" + '```' + "`n[missing](nope.md)`n")
+    Write-Text (Join $p 'skills/links/references/a.md') "a`n"
+    Write-Text (Join $p 'skills/nodesc/SKILL.md') "---`nname: nodesc`ncompatibility: 42`nmetadata:`n  count: 3`n---`n`n"
+    Write-Text (Join $p 'skills/dup-a/SKILL.md') "---`nname: dup`ndescription: First`n---`nBody`n"
+    Write-Text (Join $p 'skills/dup-b/SKILL.md') "---`nname: dup`ndescription: Second`n---`nBody`n"
+    Write-Text (Join $p 'skills/nofm/SKILL.md') "# No frontmatter`n"
+    Write-Text (Join $p 'skills/badyaml/SKILL.md') "---`nname: [unclosed`n---`nBody`n"
+    Write-Text (Join $p 'skills/long/SKILL.md') ("---`nname: long`ndescription: " + ('x' * 1030) + "`n---`n" + ("line`n" * 510))
+    New-Skill $p 'node_modules/pkg' 'pkg'
+    New-Skill $p '.hidden/secret' 'secret'
+    New-Skill $p '.claude/skills/installed' 'installed'
+    New-Skill $p '.agents/skills/ignored-one' 'ignored-one'
+    Write-Text (Join $p '.gitignore') ".agents/skills/`n"
+    $null = & git -C $p init -q 2>&1
+}
+
+$FxValidateClean = {
+    param($sb)
+    New-Skill $sb.project 'skills/clean' 'clean' -Extra @{ 'notes.md' = "notes`n" }
+}
+
+# Skills copied into agent directories by `gh skill install`, which records
+# their origin in SKILL.md frontmatter, next to a pinned lock-tracked skill.
+$FxGhInstalled = {
+    param($sb)
+    $p = $sb.project
+    Write-Text (Join $p '.claude/skills/gh-foo/SKILL.md') "---`nname: gh-foo`ndescription: From gh`nmetadata:`n  github-repo: https://github.com/octo/skills`n  github-ref: refs/tags/v1.0`n  github-tree-sha: 0123456789abcdef0123456789abcdef01234567`n  github-path: skills/gh-foo`n---`nBody`n"
+    Write-Text (Join $p '.claude/skills/gh-pinned/SKILL.md') "---`nname: gh-pinned`ndescription: Pinned by gh`nmetadata:`n  github-repo: https://github.com/octo/skills`n  github-ref: refs/tags/v2.0`n  github-tree-sha: 0123456789abcdef0123456789abcdef01234567`n  github-path: skills/gh-pinned`n  github-pinned: v2.0`n---`nBody`n"
+    Write-Text (Join $p '.agents/skills/gh-local/SKILL.md') "---`nname: gh-local`ndescription: Local via gh`nmetadata:`n  local-path: /src/gh-local`n---`nBody`n"
+    New-Skill $p '.agents/skills/mine' 'mine'
+    New-Skill $p '.agents/skills/plain' 'plain'
+    Write-Text (Join $p 'skills-lock.json') ((ConvertTo-JsonText ([ordered]@{
+                    version = 1
+                    skills  = [ordered]@{
+                        'mine' = [ordered]@{ source = 'owner/repo'; ref = 'v1.0.0'; pinned = $true; sourceType = 'github'; skillPath = 'skills/mine/SKILL.md'; computedHash = 'abc' }
+                    }
+                })) + "`n")
+}
+
+# A gh-installed skill whose recorded tree SHA is outdated (network update check).
+$FxGhStale = {
+    param($sb)
+    Write-Text (Join $sb.project '.claude/skills/find-skills/SKILL.md') "---`nname: find-skills`ndescription: From gh`nmetadata:`n  github-repo: https://github.com/vercel-labs/skills`n  github-ref: refs/heads/main`n  github-tree-sha: $('0' * 40)`n  github-path: skills/find-skills`n---`nBody`n"
+}
+
+$FxPinnedGlobal = {
+    param($sb)
+    New-Skill $sb.home '.agents/skills/find-skills' 'find-skills'
+    Write-GlobalLock $sb ([ordered]@{
+            'find-skills' = [ordered]@{
+                source = 'vercel-labs/skills'; sourceType = 'github'; sourceUrl = 'https://github.com/vercel-labs/skills.git'
+                ref = 'main'; pinned = $true; skillPath = 'skills/find-skills/SKILL.md'; skillFolderHash = ('0' * 40)
+                installedAt = '2025-01-01T00:00:00.000Z'; updatedAt = '2025-01-01T00:00:00.000Z'
+            }
+        })
+}
+
+$FxPinnedProject = {
+    param($sb)
+    New-Skill $sb.project '.agents/skills/find-skills' 'find-skills'
+    Write-Text (Join $sb.project 'skills-lock.json') ((ConvertTo-JsonText ([ordered]@{
+                    version = 1
+                    skills  = [ordered]@{
+                        'find-skills' = [ordered]@{ source = 'vercel-labs/skills'; ref = 'main'; pinned = $true; sourceType = 'github'; skillPath = 'skills/find-skills/SKILL.md'; computedHash = 'stale' }
+                    }
+                })) + "`n")
+}
+
 $FxEmptyDir = { param($sb) $d = Join $sb.root 'empty'; $null = [IO.Directory]::CreateDirectory($d); $d }
 $FxInitExists = { param($sb) New-Skill $sb.project 'x' 'x' }
 $FxProjectDirsAndRepo = { param($sb) $null = & $FxProjectDirs $sb; & $FxMultiRepo $sb }
@@ -349,18 +455,22 @@ function Start-StaticServer([string]$Directory) {
 # ─── Cases ───
 # Args may contain {src} (the fixture's return value), {wk} and {dl} (server URLs).
 
-function Case([string]$Name, [string[]]$Arguments, [scriptblock]$Setup, [object[]]$Pre = @(), [switch]$Net, [switch]$Unordered, [switch]$IgnoreStderr, [switch]$StdoutShapeOnly) {
+# -Ext: an extension the reference CLI does not have (lockstep mode only).
+# -Diverges: output intentionally differs from the reference CLI (lockstep mode only).
+function Case([string]$Name, [string[]]$Arguments, [scriptblock]$Setup, [object[]]$Pre = @(), [switch]$Net, [switch]$Unordered, [switch]$IgnoreStderr, [switch]$StdoutShapeOnly, [switch]$Ext, [switch]$Diverges) {
     [pscustomobject]@{
         Name = $Name; Args = @($Arguments | Where-Object { $null -ne $_ }); Setup = $Setup; Pre = $Pre; Network = [bool]$Net
         Unordered = [bool]$Unordered; IgnoreStderr = [bool]$IgnoreStderr; StdoutShapeOnly = [bool]$StdoutShapeOnly
+        LockstepOnly = [bool]($Ext -or $Diverges)
     }
 }
 
 $Cases = @(
     Case 'version' @('--version')
-    Case 'help' @('--help')
+    # The help screens list the extension commands and flags.
+    Case 'help' @('--help') -Diverges
     Case 'remove-help' @('rm', '--help')
-    Case 'subcommand-help' @('update', '-h')
+    Case 'subcommand-help' @('update', '-h') -Diverges
     Case 'banner' @()
     Case 'unknown-command' @('frobnicate')
     Case 'init-named' @('init', 'my-skill')
@@ -450,6 +560,46 @@ $Cases = @(
     Case 'net-update-project' @('update', '-p', '-y') $FxStaleProjectGithub -Net
     Case 'net-check-filter' @('check', 'find-skills', '-g') $FxStaleGlobalGithub -Net
     Case 'net-download-raw' @('add', 'https://raw.githubusercontent.com/vercel-labs/skills/main/skills/find-skills/SKILL.md', '-y', '-a', 'claude-code') -Net
+
+    # ─── Extensions (docs/EXTENSIONS.md): Rust vs C# only ───
+    Case 'ext-validate' @('validate') $FxValidateRepo -Ext
+    Case 'ext-validate-json' @('validate', '--json') $FxValidateRepo -Ext
+    Case 'ext-validate-fix' @('validate', '--fix') $FxValidateRepo -Ext
+    Case 'ext-validate-file' @('validate', 'skills/good/SKILL.md') $FxValidateRepo -Ext
+    Case 'ext-validate-multi' @('validate', 'skills/good', 'skills/mismatch') $FxValidateRepo -Ext
+    Case 'ext-validate-clean-strict' @('validate', '--strict') $FxValidateClean -Ext
+    Case 'ext-validate-empty' @('validate', '{src}') $FxEmptyDir -Ext
+    Case 'ext-validate-missing-path' @('validate', 'does-not-exist') -Ext
+    Case 'ext-validate-unknown-option' @('validate', '--bogus') -Ext
+    Case 'ext-validate-help' @('validate', '--help') -Ext
+    Case 'ext-preview' @('preview', '{src}', '--skill', 'alpha') $FxMultiRepo -Ext
+    Case 'ext-preview-json' @('preview', '{src}', '-s', 'alpha', '--json') $FxMultiRepo -Ext
+    Case 'ext-preview-file' @('preview', '{src}', '-s', 'alpha', '--file', 'scripts/run.sh') $FxMultiRepo -Ext
+    Case 'ext-preview-file-missing' @('preview', '{src}', '-s', 'alpha', '--file', 'nope.txt') $FxMultiRepo -Ext
+    Case 'ext-preview-multiple' @('preview', '{src}') $FxMultiRepo -Ext
+    Case 'ext-preview-no-match' @('preview', '{src}', '-s', 'zzz') $FxMultiRepo -Ext
+    Case 'ext-show-single' @('show', '{src}') $FxSingle -Ext
+    Case 'ext-preview-wk' @('preview', '{wk}', '--skill', 'wk-zip') -Ext
+    Case 'ext-preview-dl' @('preview', '{dl}/bundle.tar.gz') -Ext
+    Case 'ext-preview-errors' @('preview', '--file') -Ext
+    Case 'ext-preview-help' @('preview', '-h') -Ext
+    Case 'ext-pin-local' @('add', '{src}', '--pin', 'v1', '-y') $FxSingle -Ext
+    Case 'ext-pin-conflict' @('add', 'owner/repo#main', '--pin', 'v1', '-y') -Ext
+    Case 'ext-pin-latest-wk' @('add', '{wk}', '--pin', 'latest', '-y') -Ext
+    Case 'ext-pin-missing-value' @('add', 'owner/repo', '--pin') -Ext
+    Case 'ext-list-gh' @('list') $FxGhInstalled -Ext
+    Case 'ext-list-gh-json' @('ls', '--json') $FxGhInstalled -Ext
+    Case 'ext-update-pinned-global' @('update', '-g', '-y') $FxPinnedGlobal -Ext
+    Case 'ext-update-pinned-project' @('update', '-p', '-y') $FxPinnedProject -Ext
+    Case 'ext-update-wk-dry-run' @('update', '-g', '-y', '--dry-run') $FxWkGlobalLock -Ext
+    Case 'ext-update-wk-force' @('update', '-g', '-y', '--force') $FxWkGlobalLock -Ext
+    Case 'ext-net-preview' @('preview', 'vercel-labs/skills@find-skills') -Net -Ext
+    Case 'ext-net-pin' @('add', 'vercel-labs/skills', '--pin', 'main', '-s', 'find-skills', '-y', '-a', 'claude-code') -Net -Ext
+    Case 'ext-net-pin-global' @('add', 'vercel-labs/skills', '--pin', 'main', '-s', 'find-skills', '-g', '-y', '-a', 'claude-code') -Net -Ext
+    Case 'ext-net-update-dry-run' @('update', '-g', '-y', '--dry-run') $FxStaleGlobalGithub -Net -Ext
+    Case 'ext-net-update-unpin-dry-run' @('update', '-g', '-y', '--unpin', '--dry-run') $FxPinnedGlobal -Net -Ext
+    Case 'ext-net-update-unpin' @('update', '-p', '-y', '--unpin') $FxPinnedProject -Net -Ext
+    Case 'ext-net-update-gh' @('update', '-p', '-y') $FxGhStale -Net -Ext
 )
 
 # ─── Runner ───
@@ -511,6 +661,7 @@ function Get-TreeSnapshot($sb) {
             foreach ($item in ([IO.DirectoryInfo]::new($dir).EnumerateFileSystemInfos() | Sort-Object Name)) {
                 $rel = [IO.Path]::GetRelativePath($base, $item.FullName).Replace('\', '/')
                 if ($rel.StartsWith('AppData')) { continue }
+                if ($label -eq 'project' -and $rel -eq '.git') { continue }   # fixture repositories
                 $key = "$label/$rel"
                 if ($item -is [IO.DirectoryInfo]) {
                     if ($item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
@@ -595,7 +746,7 @@ function Get-LineDiff([string]$Label, [string]$A, [string]$B) {
         if ($ops[$k][0] -ne ' ') { for ($c = [Math]::Max(0, $k - 2); $c -le [Math]::Min($ops.Count - 1, $k + 2); $c++) { $keep[$c] = $true } }
     }
     $lines = [Collections.Generic.List[string]]::new()
-    $lines.Add("--- $Label (ts)"); $lines.Add("+++ $Label (port)")
+    $lines.Add("--- $Label ($($Sides[0]))"); $lines.Add("+++ $Label ($($Sides[1]))")
     $gap = $true
     for ($k = 0; $k -lt $ops.Count; $k++) {
         if ($keep[$k]) { if ($gap) { $lines.Add('@@') }; $lines.Add($ops[$k]); $gap = $false } else { $gap = $true }
@@ -609,17 +760,26 @@ $serverHandles = @((Start-StaticServer $wkDir), (Start-StaticServer $dlDir))
 $Servers.wk = $serverHandles[0].Url
 $Servers.dl = $serverHandles[1].Url
 
-$tsCommand = @($Node, (Join $Reference 'src/cli.ts'))
-$rsCommand = @($Bin)
+if ($Lockstep) {
+    $Sides = @('rust', 'csharp')
+    $tsCommand = @($Bin)
+    $rsCommand = @($OtherBin)
+} else {
+    $Sides = @('ts', 'port')
+    $tsCommand = @($Node, (Join $Reference 'src/cli.ts'))
+    $rsCommand = @($Bin)
+}
 $passed = 0
+$skipped = 0
 $failed = [Collections.Generic.List[string]]::new()
 try {
     foreach ($case in $Cases) {
         if (-not $case.Name.Contains($Filter) -or ($case.Network -and -not $Network)) { continue }
-        $ts = Invoke-Impl 'ts' $tsCommand $case $base
-        $rs = Invoke-Impl 'rs' $rsCommand $case $base
+        if ($case.LockstepOnly -and -not $Lockstep) { $skipped++; continue }
+        $ts = Invoke-Impl $Sides[0] $tsCommand $case $base
+        $rs = Invoke-Impl $Sides[1] $rsCommand $case $base
         $problems = [Collections.Generic.List[string]]::new()
-        if ("$($ts.Code)" -ne "$($rs.Code)") { $problems.Add("exit code: ts=$($ts.Code) port=$($rs.Code)") }
+        if ("$($ts.Code)" -ne "$($rs.Code)") { $problems.Add("exit code: $($Sides[0])=$($ts.Code) $($Sides[1])=$($rs.Code)") }
         if ($case.StdoutShapeOnly) {
             if ([bool]$ts.Stdout.Trim() -ne [bool]$rs.Stdout.Trim()) { $problems.Add('stdout presence differs') }
         } else {
@@ -634,8 +794,8 @@ try {
         $keys = @($ts.Tree.Keys) + @($rs.Tree.Keys) | Sort-Object -Unique -CaseSensitive
         foreach ($k in $keys) {
             $inTs = $ts.Tree.Contains($k); $inRs = $rs.Tree.Contains($k)
-            if (-not $inTs) { $problems.Add("tree: only in port: $k") }
-            elseif (-not $inRs) { $problems.Add("tree: only in ts: $k") }
+            if (-not $inTs) { $problems.Add("tree: only in $($Sides[1]): $k") }
+            elseif (-not $inRs) { $problems.Add("tree: only in $($Sides[0]): $k") }
             elseif ($ts.Tree[$k] -cne $rs.Tree[$k]) { foreach ($l in (Get-LineDiff "file $k" $ts.Tree[$k] $rs.Tree[$k])) { $problems.Add($l) } }
         }
         if ($problems.Count -eq 0) {
@@ -647,7 +807,7 @@ try {
             $problems | Select-Object -First 80 | ForEach-Object { Write-Host "    $_" }
         }
         if ($ShowOutput) {
-            foreach ($pair in @(@('ts', $ts), @('port', $rs))) {
+            foreach ($pair in @(@($Sides[0], $ts), @($Sides[1], $rs))) {
                 Write-Host "  ── $($pair[0]) (exit $($pair[1].Code)) stdout:`n$($pair[1].Stdout)`n  ── $($pair[0]) stderr:`n$($pair[1].Stderr)"
             }
         }
@@ -661,5 +821,5 @@ try {
     if ($Keep) { Write-Host "sandboxes kept in $base" } else { Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-Write-Host "`n$passed passed, $($failed.Count) failed"
+Write-Host "`n$passed passed, $($failed.Count) failed$($skipped ? ", $skipped skipped (lockstep-only; run with -Lockstep)" : '')"
 exit ($failed.Count -gt 0 ? 1 : 0)
