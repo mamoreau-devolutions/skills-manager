@@ -105,7 +105,7 @@ internal static class SyncCommand
     {
         if (v != null) return v;
         Ui.Cancel("Sync cancelled");
-        Sys.Exit(0);
+        Term.Exit(0);
         return null!;
     }
 
@@ -126,7 +126,7 @@ internal static class SyncCommand
             }
         }
 
-        Sys.OutLine();
+        Term.OutLine();
         if (!agentResult.IsAgent) Ui.Intro(Pc.BgCyan(Pc.Black(" skills experimental_sync ")));
         else Ui.Log.Info($"{Pc.BgCyan(Pc.Black(Pc.Bold($" {agentResult.Name} ")))} Agent detected — installing non-interactively");
 
@@ -169,7 +169,7 @@ internal static class SyncCommand
             if (upToDate.Count > 0) Ui.Log.Info(Pc.Dim($"{upToDate.Count} skill{(upToDate.Count != 1 ? "s" : "")} already up to date"));
             if (toInstall.Count == 0)
             {
-                Sys.OutLine();
+                Term.OutLine();
                 Ui.Outro(Pc.Green("All skills are up to date."));
                 return;
             }
@@ -200,7 +200,7 @@ internal static class SyncCommand
             {
                 Ui.Log.Error($"Invalid agents: {string.Join(", ", invalid)}");
                 Ui.Log.Info($"Valid agents: {string.Join(", ", Agents.AllNames())}");
-                Sys.Exit(1);
+                Term.Exit(1);
             }
             targetAgents = list;
         }
@@ -261,13 +261,13 @@ internal static class SyncCommand
             summary.Add($"{Pc.Cyan(s.Name)} {Pc.Dim($"← {pkg}")}");
             summary.Add($"  {Pc.Dim(ShortenPath(canonical, cwd))}");
         }
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Note(string.Join("\n", summary), "Sync Summary");
 
         if (!options.Yes && Ui.Confirm("Proceed with sync?") != true)
         {
             Ui.Cancel("Sync cancelled");
-            Sys.Exit(0);
+            Term.Exit(0);
         }
 
         spinner.Start("Syncing skills…");
@@ -297,7 +297,7 @@ internal static class SyncCommand
             }
         }
 
-        Sys.OutLine();
+        Term.OutLine();
         if (successfulNames.Count > 0)
         {
             var lines = new List<string>();
@@ -314,7 +314,7 @@ internal static class SyncCommand
         var failed = results.Where(r => !r.Success).ToList();
         if (failed.Count > 0)
         {
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Log.Error(Pc.Red($"Failed to install {failed.Count}"));
             foreach (var r in failed) Ui.Log.Message($"  {Pc.Red("✗")} {r.Skill} → {r.Agent}: {Pc.Dim(r.Error ?? "undefined")}");
         }
@@ -325,7 +325,7 @@ internal static class SyncCommand
             ("successCount", successfulNames.Count.ToString()),
             ("agents", string.Join(",", targetAgents)));
 
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Outro($"{Pc.Green("Done!")}{Pc.Dim("  Review skills before use; they run with full agent permissions.")}");
     }
 

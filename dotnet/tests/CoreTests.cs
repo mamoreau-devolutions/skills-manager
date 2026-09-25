@@ -23,6 +23,16 @@ public class VersionTests
         var pkg = Json.Parse(File.ReadAllText(Path.Combine(reference, "package.json")));
         Assert.Equal(Program.Version, Json.Str(pkg, "version"));
     }
+
+    /// The CLI routes the library core's warnings to stderr and sends the
+    /// reference CLI's User-Agent (parity depends on both).
+    [Fact]
+    public void CliConfiguresTheCore()
+    {
+        Program.ConfigureCore();
+        Assert.Equal($"skills-cli/{Program.Version}", Sys.UserAgent);
+        Assert.NotNull(Sys.WarningSink);
+    }
 }
 
 public class PathTests

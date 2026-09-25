@@ -83,7 +83,7 @@ internal static partial class ValidateCommand
     public static string Help() =>
         "Usage: skills validate [path...] [options]\n\nCheck skills against the Agent Skills specification (https://agentskills.io/specification).\n\nOptions:\n  --fix                 Remove install tracking metadata from SKILL.md files\n  --strict              Exit with status 1 on warnings as well as errors\n  --json                Output as JSON\n  -h, --help            Show this help message\n\nExamples:\n  skills validate\n  skills validate skills/my-skill --strict";
 
-    public static void PrintHelp() => Sys.OutLine(Help());
+    public static void PrintHelp() => Term.OutLine(Help());
 
     public static (List<string> Paths, ValidateOptions Options, List<string> Errors) ParseOptions(IReadOnlyList<string> args)
     {
@@ -812,16 +812,16 @@ internal static partial class ValidateCommand
         }
         if (errors.Count > 0)
         {
-            Sys.ErrLine(string.Join("\n", errors));
-            Sys.Exit(1);
+            Term.ErrLine(string.Join("\n", errors));
+            Term.Exit(1);
         }
         if (targets.Count == 0) targets.Add(".");
         foreach (var t in targets)
         {
             if (!Fs.Exists(NodePath.Resolve(t)))
             {
-                Sys.ErrLine($"Path does not exist: {t}");
-                Sys.Exit(1);
+                Term.ErrLine($"Path does not exist: {t}");
+                Term.Exit(1);
             }
         }
         var reports = new List<PathReport>();
@@ -833,8 +833,8 @@ internal static partial class ValidateCommand
             }
             catch (ValidateFailure e)
             {
-                Sys.ErrLine(e.Message);
-                Sys.Exit(1);
+                Term.ErrLine(e.Message);
+                Term.Exit(1);
             }
         }
         if (o.Json)
@@ -842,12 +842,12 @@ internal static partial class ValidateCommand
             JsonNode value = reports.Count == 1
                 ? RenderJsonValue(reports[0])
                 : new JsonArray(reports.Select(r => (JsonNode?)RenderJsonValue(r)).ToArray());
-            Sys.OutLine(Json.Stringify(value));
+            Term.OutLine(Json.Stringify(value));
         }
         else
         {
-            Sys.Out(string.Join("\n", reports.Select(RenderText)));
+            Term.Out(string.Join("\n", reports.Select(RenderText)));
         }
-        if (reports.Any(r => r.Failed(o.Strict))) Sys.ExitCode = 1;
+        if (reports.Any(r => r.Failed(o.Strict))) Term.ExitCode = 1;
     }
 }

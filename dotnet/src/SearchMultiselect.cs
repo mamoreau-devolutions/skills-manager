@@ -207,7 +207,7 @@ internal static class SearchMultiselect
                 lines.Add($"{SBar}   {Ui.Repeat(SBarH, 36)}");
             }
 
-            var columns = Sys.TerminalColumns() ?? 80;
+            var columns = Term.TerminalColumns() ?? 80;
 
             List<string> BuildFooter(bool includeDetail, bool includeSummary)
             {
@@ -294,7 +294,7 @@ internal static class SearchMultiselect
                 return output;
             }
 
-            int? maxFrameRows = Sys.TerminalRows() is { } rowsCount ? Math.Max(1, rowsCount - 1) : null;
+            int? maxFrameRows = Term.TerminalRows() is { } rowsCount ? Math.Max(1, rowsCount - 1) : null;
 
             (List<string> Items, List<string> Footer, int Rows) Fit(bool includeDetail, bool includeSummary)
             {

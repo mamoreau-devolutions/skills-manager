@@ -37,7 +37,7 @@ internal static class PreviewCommand
     public static string Help() =>
         "Usage: skills preview <source>[@<skill>] [options]\n\nShow a skill's files and SKILL.md without installing it.\n\nOptions:\n  -s, --skill <skill>   Select the skill to preview\n  --file <path>         Print one file of the skill instead of the overview\n  --full-depth          Search nested directories like skills add --full-depth\n  --json                Output as JSON\n  --no-pager            Do not page the output\n  -h, --help            Show this help message\n\nExamples:\n  skills preview vercel-labs/agent-skills@web-design-guidelines\n  skills preview ./my-skills --skill my-skill --file scripts/run.sh";
 
-    public static void PrintHelp() => Sys.OutLine(Help());
+    public static void PrintHelp() => Term.OutLine(Help());
 
     public static (List<string> Sources, PreviewOptions Options, List<string> Errors) ParseOptions(IReadOnlyList<string> args)
     {
@@ -395,19 +395,19 @@ internal static class PreviewCommand
     /// taller than the terminal (unless `--no-pager`).
     private static void PageOrPrint(string text, bool noPager)
     {
-        if (!noPager && Sys.StdoutIsTty())
+        if (!noPager && Term.StdoutIsTty())
         {
-            var rows = Sys.TerminalRows() ?? 0;
+            var rows = Term.TerminalRows() ?? 0;
             var lines = text.Count(c => c == '\n');
             if (rows > 0 && lines > rows && RunPager(text)) return;
         }
-        Sys.Out(text);
+        Term.Out(text);
     }
 
     private static void FilePicker(UseCommand.Materialized m, IReadOnlyList<PreviewFile> files, bool noPager)
     {
         var others = files.Where(f => !IsRootSkillMd(f.Path)).ToList();
-        if (others.Count == 0 || !Sys.StdinIsTty()) return;
+        if (others.Count == 0 || !Term.StdinIsTty()) return;
         var options = others.Select((f, i) => new SelectOption<int?>(i, Sanitize.Metadata(f.Path), FormatSize(f.Size))).ToList();
         options.Add(new SelectOption<int?>(null, "Done"));
         var initial = 0;
@@ -427,7 +427,7 @@ internal static class PreviewCommand
             }
             if (IsBinary(bytes))
             {
-                Sys.OutLine($"Binary file, not shown ({FormatSize(f.Size)})");
+                Term.OutLine($"Binary file, not shown ({FormatSize(f.Size)})");
                 continue;
             }
             var text = Encoding.UTF8.GetString(bytes);
@@ -459,16 +459,16 @@ internal static class PreviewCommand
                 return e.Message;
             }
             if (IsBinary(bytes)) return $"Cannot display binary file: {wanted}";
-            if (!o.NoPager && Sys.StdoutIsTty()) PageOrPrint(Encoding.UTF8.GetString(bytes), false);
-            else Sys.OutBytes(bytes);
+            if (!o.NoPager && Term.StdoutIsTty()) PageOrPrint(Encoding.UTF8.GetString(bytes), false);
+            else Term.OutBytes(bytes);
             return null;
         }
         if (o.Json)
         {
-            Sys.OutLine(RenderJson(m, source, files));
+            Term.OutLine(RenderJson(m, source, files));
             return null;
         }
-        var tty = Sys.StdoutIsTty();
+        var tty = Term.StdoutIsTty();
         var text = RenderOverview(m.Name, m.Description, files, m.SkillMd, tty);
         if (tty)
         {
@@ -477,7 +477,7 @@ internal static class PreviewCommand
         }
         else
         {
-            Sys.Out(text);
+            Term.Out(text);
         }
         return null;
     }
@@ -485,8 +485,8 @@ internal static class PreviewCommand
     [System.Diagnostics.CodeAnalysis.DoesNotReturn]
     private static void Fail(string message)
     {
-        Sys.ErrLine(message);
-        Sys.Exit(1);
+        Term.ErrLine(message);
+        Term.Exit(1);
     }
 
     public static void Run(IReadOnlyList<string> args)

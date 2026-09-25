@@ -1,7 +1,7 @@
 // Minimal blocking HTTP client standing in for the global `fetch`.
 //
 // Like Node's fetch: no system proxy, redirects followed, gzip/deflate/br
-// decoded, User-Agent "skills-cli/<version>" unless a request sets its own.
+// decoded, User-Agent `Sys.UserAgent` unless a request sets its own.
 
 using System.Net;
 using System.Text;
@@ -90,6 +90,10 @@ internal sealed class HttpRequest(string url)
         {
             throw;
         }
+        catch (OperationCanceledException) when (Sys.Context?.Cancel.IsCancellationRequested == true)
+        {
+            throw;
+        }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException or IOException or UriFormatException or InvalidOperationException or NotSupportedException)
         {
             throw new HttpException(e is TaskCanceledException or OperationCanceledException ? "The operation was aborted due to timeout" : e.Message);
@@ -98,7 +102,8 @@ internal sealed class HttpRequest(string url)
 
     private async Task<HttpResponse> SendAsync()
     {
-        using var cts = new CancellationTokenSource(_timeout);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Sys.Context?.Cancel ?? CancellationToken.None);
+        cts.CancelAfter(_timeout);
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         var hasUa = false;
         foreach (var (k, v) in _headers)
@@ -106,7 +111,7 @@ internal sealed class HttpRequest(string url)
             if (k.Equals("User-Agent", StringComparison.OrdinalIgnoreCase)) hasUa = true;
             req.Headers.TryAddWithoutValidation(k, v);
         }
-        if (!hasUa) req.Headers.TryAddWithoutValidation("User-Agent", $"skills-cli/{Program.Version}");
+        if (!hasUa) req.Headers.TryAddWithoutValidation("User-Agent", Sys.UserAgent);
         using var resp = await Client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
         var status = (int)resp.StatusCode;
         var headers = new Dictionary<string, string>();

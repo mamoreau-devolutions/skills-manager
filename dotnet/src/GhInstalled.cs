@@ -247,13 +247,13 @@ internal static class GhInstalled
         var results = CheckGhSkills(skills);
         if (results.Count > 0)
         {
-            Sys.OutLine();
-            Sys.OutLine($"{Dim}Managed by gh skill (update them with gh skill update):{Reset}");
+            Term.OutLine();
+            Term.OutLine($"{Dim}Managed by gh skill (update them with gh skill update):{Reset}");
             foreach (var (i, status) in results)
             {
                 var s = skills[i];
                 var tail = status.Kind == GhStatusKind.UpdateAvailable ? "update available" : $"pinned to {Sanitize.Metadata(status.Pinned!)}";
-                Sys.OutLine($"  • {Sanitize.Metadata(s.Name)} {Dim}({Sanitize.Metadata(s.Origin.Source())}){Reset} {tail}");
+                Term.OutLine($"  • {Sanitize.Metadata(s.Name)} {Dim}({Sanitize.Metadata(s.Origin.Source())}){Reset} {tail}");
             }
         }
         return skills.Count;

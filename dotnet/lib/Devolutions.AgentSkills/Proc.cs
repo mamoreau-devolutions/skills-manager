@@ -79,7 +79,8 @@ internal sealed class Proc
             RedirectStandardInput = redirectStdin,
             RedirectStandardOutput = redirectOut,
             RedirectStandardError = redirectOut,
-            CreateNoWindow = _hideWindow,
+            // A library host (a GUI app) has no console to share: never flash one.
+            CreateNoWindow = _hideWindow || Sys.Context != null,
         };
         foreach (var a in _args) psi.ArgumentList.Add(a);
         foreach (var (k, v) in _env) psi.Environment[k] = v;
@@ -105,17 +106,22 @@ internal sealed class Proc
     /// Run with stdin closed and stdout/stderr captured.
     public ProcOutput Output()
     {
+        var cancel = Sys.Context?.Cancel ?? CancellationToken.None;
+        cancel.ThrowIfCancellationRequested();
         using var p = Start(StartInfo(redirectStdin: true, redirectOut: true));
+        using var onCancel = cancel.Register(() => Kill(p));
         p.StandardInput.Close();
         var outTask = ReadAllAsync(p.StandardOutput.BaseStream);
         var errTask = ReadAllAsync(p.StandardError.BaseStream);
         var ms = _timeout.HasValue ? (int)Math.Min(int.MaxValue, _timeout.Value.TotalMilliseconds) : -1;
         if (!p.WaitForExit(ms))
         {
-            try { p.Kill(entireProcessTree: true); } catch { /* already exited */ }
+            Kill(p);
+            cancel.ThrowIfCancellationRequested();
             throw new ProcException(ProcErrorKind.Timeout, "timed out");
         }
         p.WaitForExit();
+        cancel.ThrowIfCancellationRequested();
         var stdout = outTask.GetAwaiter().GetResult();
         var stderr = errTask.GetAwaiter().GetResult();
         if (_maxOutput.HasValue && stdout.Length + stderr.Length > _maxOutput.Value)
@@ -157,6 +163,11 @@ internal sealed class Proc
         }
         p.WaitForExit();
         return p.ExitCode;
+    }
+
+    private static void Kill(Process p)
+    {
+        try { p.Kill(entireProcessTree: true); } catch { /* already exited */ }
     }
 
     private static async Task<byte[]> ReadAllAsync(Stream s)

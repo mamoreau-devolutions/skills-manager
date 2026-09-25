@@ -35,6 +35,11 @@ On top of that, the ports add features of their own, described in
 - `skills list` and `skills update` recognize skills installed by the GitHub
   CLI's `gh skill install`.
 
+The C# core is also published as a NuGet library,
+[`Devolutions.AgentSkills`](dotnet/lib/Devolutions.AgentSkills/README.md), for
+applications that manage skills in-process: search, install, list, update and
+remove, with no UI.
+
 ## Quick start
 
 Rust (1.80+):
@@ -89,7 +94,7 @@ and [`dotnet/PARITY.md`](dotnet/PARITY.md).
 ## Testing
 
 - Unit tests: `cargo test` in `rust/` (92 tests) and `dotnet test` in `dotnet/`
-  (97 tests).
+  (111 tests).
 - Parity: [`rust/parity/parity.ps1`](rust/parity/parity.ps1) (PowerShell 7)
   compares a port with a built checkout of the reference CLI.
   [`dotnet/parity/parity.ps1`](dotnet/parity/parity.ps1) runs the same cases

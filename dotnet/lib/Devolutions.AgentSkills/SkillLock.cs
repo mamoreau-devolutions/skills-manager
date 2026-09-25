@@ -28,6 +28,10 @@ internal static class SkillLock
     private const string LockFile = ".skill-lock.json";
     private const int CurrentVersion = 3;
 
+    /// Serializes read-modify-write cycles between threads of one process
+    /// (concurrent API calls in a host application).
+    private static readonly object Gate = new();
+
     /// $XDG_STATE_HOME/skills/.skill-lock.json or ~/.agents/.skill-lock.json.
     public static string GetPath() =>
         Sys.Env("XDG_STATE_HOME") is { } xdg ? NodePath.Join(xdg, "skills", LockFile) : NodePath.Join(Sys.HomeDir(), ".agents", LockFile);
@@ -71,23 +75,29 @@ internal static class SkillLock
 
     public static void AddSkill(string name, JsonObject entry)
     {
-        var l = Read();
-        var now = Sys.NowIso();
-        var installedAt = Json.Get(l.Skills[name], "installedAt") is { } existing ? Json.Clone(existing) : JsonValue.Create(now);
-        entry["installedAt"] = installedAt;
-        entry["updatedAt"] = now;
-        // Assigning a fresh object to an existing JS key keeps its position.
-        l.Skills[name] = entry;
-        Write(l);
+        lock (Gate)
+        {
+            var l = Read();
+            var now = Sys.NowIso();
+            var installedAt = Json.Get(l.Skills[name], "installedAt") is { } existing ? Json.Clone(existing) : JsonValue.Create(now);
+            entry["installedAt"] = installedAt;
+            entry["updatedAt"] = now;
+            // Assigning a fresh object to an existing JS key keeps its position.
+            l.Skills[name] = entry;
+            Write(l);
+        }
     }
 
     public static bool RemoveSkill(string name)
     {
-        var l = Read();
-        if (!l.Skills.ContainsKey(name)) return false;
-        l.Skills.Remove(name);
-        Write(l);
-        return true;
+        lock (Gate)
+        {
+            var l = Read();
+            if (!l.Skills.ContainsKey(name)) return false;
+            l.Skills.Remove(name);
+            Write(l);
+            return true;
+        }
     }
 
     public static JsonNode? GetSkill(string name) => Read().Skills.TryGetPropertyValue(name, out var v) ? v : null;
@@ -98,14 +108,17 @@ internal static class SkillLock
 
     public static void DismissPrompt(string key)
     {
-        var l = Read();
-        if (l.Root["dismissed"] is not JsonObject d)
+        lock (Gate)
         {
-            d = new JsonObject();
-            l.Root["dismissed"] = d;
+            var l = Read();
+            if (l.Root["dismissed"] is not JsonObject d)
+            {
+                d = new JsonObject();
+                l.Root["dismissed"] = d;
+            }
+            d[key] = true;
+            Write(l);
         }
-        d[key] = true;
-        Write(l);
     }
 
     public static List<string>? GetLastSelectedAgents() =>
@@ -113,8 +126,11 @@ internal static class SkillLock
 
     public static void SaveSelectedAgents(IEnumerable<string> agents)
     {
-        var l = Read();
-        l.Root["lastSelectedAgents"] = new JsonArray(agents.Select(a => (JsonNode)JsonValue.Create(a)!).ToArray());
-        Write(l);
+        lock (Gate)
+        {
+            var l = Read();
+            l.Root["lastSelectedAgents"] = new JsonArray(agents.Select(a => (JsonNode)JsonValue.Create(a)!).ToArray());
+            Write(l);
+        }
     }
 }

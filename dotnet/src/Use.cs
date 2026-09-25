@@ -17,8 +17,6 @@ internal sealed class UseFailure(string message) : Exception(message);
 
 internal static class UseCommand
 {
-    private static readonly string[] BlobAllowedOwners = ["vercel", "vercel-labs", "heygen-com", "remotion-dev"];
-
     private static readonly (string Agent, string Command)[] SupportedUseAgents =
     [
         ("claude-code", "claude"),
@@ -201,7 +199,7 @@ internal static class UseCommand
             }
             catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException && e.IsSymlink)
             {
-                Sys.ErrLine($"Skipping broken symlink: {s}");
+                Term.ErrLine($"Skipping broken symlink: {s}");
             }
         }
     }
@@ -316,7 +314,7 @@ internal static class UseCommand
                 {
                     BlobInstallResult? blob = null;
                     if (parsed.Kind == "github" && !fullDepth && SourceParser.GetOwnerRepo(parsed) is { } or
-                        && BlobAllowedOwners.Contains(or.Split('/')[0].ToLowerInvariant()))
+                        && InstallRecords.BlobAllowedOwners.Contains(or.Split('/')[0].ToLowerInvariant()))
                         blob = Blob.TryBlobInstall(or, new BlobOptions(parsed.Subpath, selector, parsed.Ref, true, includeInternal));
                     if (blob != null)
                     {
@@ -347,8 +345,8 @@ internal static class UseCommand
     [System.Diagnostics.CodeAnalysis.DoesNotReturn]
     private static void Fail(string message)
     {
-        Sys.ErrLine(message);
-        Sys.Exit(1);
+        Term.ErrLine(message);
+        Term.Exit(1);
     }
 
     private static int LaunchAgent(string useAgent, string prompt)
@@ -383,7 +381,7 @@ internal static class UseCommand
     {
         if (options.Help)
         {
-            Sys.OutLine(Help());
+            Term.OutLine(Help());
             return;
         }
         if (parseErrors.Count > 0) Fail(string.Join("\n", parseErrors));
@@ -417,8 +415,8 @@ internal static class UseCommand
                 return;
             }
             if (code == 0) return;
-            Sys.Exit(code);
+            Term.Exit(code);
         }
-        Sys.Out(prompt);
+        Term.Out(prompt);
     }
 }

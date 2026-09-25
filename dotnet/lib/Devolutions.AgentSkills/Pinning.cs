@@ -4,7 +4,6 @@
 // lock entry. The reference CLI ignores the extra field.
 
 using System.Text.Json.Nodes;
-using static Skills.Ansi;
 
 namespace Skills;
 
@@ -16,7 +15,7 @@ internal enum PinActionKind
     /// Pinned; skip it and list it in the pinned notice.
     Skip,
 
-    /// Pinned with `--force`: reinstall at the pinned ref (`--pin <ref>`).
+    /// Pinned with `--force`: reinstall at the pinned ref (`--pin &lt;ref&gt;`).
     Force,
 
     /// Pinned with `--unpin`: reinstall from the default branch.
@@ -58,7 +57,7 @@ internal static class Pinning
         var r => new PinAction(PinActionKind.Skip, r),
     };
 
-    /// Validate `skills add --pin <pin>` against the parsed source's kind and
+    /// Validate `skills add --pin &lt;pin&gt;` against the parsed source's kind and
     /// ref; returns the error message, or null when valid.
     public static string? CheckPin(string kind, string? sourceRef, string pin)
     {
@@ -67,14 +66,5 @@ internal static class Pinning
             return $"Conflicting refs: the source selects \"{sourceRef}\" but --pin selects \"{pin}\". Provide one ref.";
         if (pin == PinLatest && kind != "github") return "--pin latest is only supported for GitHub sources";
         return null;
-    }
-
-    /// `Pinned skills (not updated; use --unpin to update them):` notice.
-    public static void PrintPinnedNotice(List<(string Name, string Ref)> pinned)
-    {
-        if (pinned.Count == 0) return;
-        Sys.OutLine();
-        Sys.OutLine($"{Dim}Pinned skills (not updated; use --unpin to update them):{Reset}");
-        foreach (var (name, r) in pinned) Sys.OutLine($"  • {Sanitize.Metadata(name)} {Dim}({Sanitize.Metadata(r)}){Reset}");
     }
 }

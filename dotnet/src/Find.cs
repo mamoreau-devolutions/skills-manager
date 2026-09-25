@@ -7,8 +7,6 @@ using static Skills.Ansi;
 
 namespace Skills;
 
-internal sealed record SearchSkill(string Name, string Slug, string Source, double Installs);
-
 internal static partial class FindCommand
 {
     [GeneratedRegex("^[a-z0-9](?:[a-z0-9-]{0,38})$", RegexOptions.IgnoreCase)]
@@ -72,22 +70,7 @@ internal static partial class FindCommand
         return (string.Join(" ", query), owner, errors);
     }
 
-    private static string ApiBase() => Sys.Env("SKILLS_API_URL") ?? "https://skills.sh";
-
-    public static List<SearchSkill> SearchApi(string query, string? owner)
-    {
-        var pairs = new List<(string, string)> { ("q", query), ("limit", "20") };
-        if (owner != null) pairs.Add(("owner", owner));
-        var url = $"{ApiBase()}/api/search?{UrlUtil.SearchParams([.. pairs])}";
-        var resp = HttpRequest.Get(url).Timeout(TimeSpan.FromSeconds(60)).TrySend();
-        if (resp is not { Ok: true } || resp.Json() is not { } data || data["skills"] is not System.Text.Json.Nodes.JsonArray list) return [];
-        var output = list.Select(s => new SearchSkill(
-            Sanitize.Metadata(Json.Str(s, "name") ?? ""),
-            Sanitize.Metadata(Json.Str(s, "id") ?? ""),
-            Sanitize.Metadata(Json.Str(s, "source") ?? ""),
-            Json.AsNumber(Json.Get(s, "installs")) ?? 0)).ToList();
-        return Collate.StableSort(output, (a, b) => b.Installs.CompareTo(a.Installs));
-    }
+    public static List<SearchSkill> SearchApi(string query, string? owner) => Skills.SearchApi.Search(query, owner);
 
     /// fzf-style interactive search. Returns the chosen skill or null.
     private static SearchSkill? RunSearchPrompt(string? owner)
@@ -102,7 +85,7 @@ internal static partial class FindCommand
         long generation = 0;
         var inbox = new System.Collections.Concurrent.ConcurrentQueue<(long Gen, List<SearchSkill> Results)>();
 
-        Sys.Out("\x1b[?25l");
+        Term.Out("\x1b[?25l");
         void Render()
         {
             var sb = new StringBuilder();
@@ -130,7 +113,7 @@ internal static partial class FindCommand
             lines.Add("");
             lines.Add($"{Dim}up/down navigate | enter select | esc cancel{Reset}");
             foreach (var l in lines) sb.Append(l).Append("\r\n");
-            Sys.Out(sb.ToString());
+            Term.Out(sb.ToString());
             lastLines = lines.Count;
         }
 
@@ -206,7 +189,7 @@ internal static partial class FindCommand
             Render();
         }
         Ui.LeaveRawMode();
-        Sys.Out("\x1b[?25h");
+        Term.Out("\x1b[?25h");
         return chosen;
     }
 
@@ -219,11 +202,11 @@ internal static partial class FindCommand
     public static void Run(IReadOnlyList<string> args)
     {
         var (query, owner, errors) = ParseOptions(args);
-        var nonInteractive = !Sys.StdinIsTty();
+        var nonInteractive = !Term.StdinIsTty();
         if (errors.Count > 0)
         {
-            foreach (var e in errors) Sys.ErrLine(e);
-            Sys.ErrLine("Usage: skills find <query> [--owner <owner>]");
+            foreach (var e in errors) Term.ErrLine(e);
+            Term.ErrLine("Usage: skills find <query> [--owner <owner>]");
             return;
         }
 
@@ -234,29 +217,29 @@ internal static partial class FindCommand
             if (results.Count == 0)
             {
                 var suffix = owner != null ? $" from owner \"{owner}\"" : "";
-                Sys.OutLine($"{Dim}No skills found for \"{query}\"{suffix}{Reset}");
+                Term.OutLine($"{Dim}No skills found for \"{query}\"{suffix}{Reset}");
                 return;
             }
-            Sys.OutLine($"{Dim}Install with{Reset} skills add <owner/repo@skill>");
-            Sys.OutLine();
+            Term.OutLine($"{Dim}Install with{Reset} skills add <owner/repo@skill>");
+            Term.OutLine();
             foreach (var s in results)
             {
                 var pkg = s.Source.Length == 0 ? s.Slug : s.Source;
                 var installs = FormatInstalls(s.Installs);
-                Sys.OutLine($"{Text}{pkg}@{s.Name}{Reset}{(installs.Length == 0 ? "" : $" {Cyan}{installs}{Reset}")}");
-                Sys.OutLine($"{Dim}└ https://skills.sh/{s.Slug}{Reset}");
-                Sys.OutLine();
+                Term.OutLine($"{Text}{pkg}@{s.Name}{Reset}{(installs.Length == 0 ? "" : $" {Cyan}{installs}{Reset}")}");
+                Term.OutLine($"{Dim}└ https://skills.sh/{s.Slug}{Reset}");
+                Term.OutLine();
             }
             return;
         }
 
         if (nonInteractive || DetectAgent.IsRunningInAgent())
         {
-            Sys.OutLine($"{Dim}Tip: if running in a coding agent, follow these steps:{Reset}");
-            Sys.OutLine($"{Dim}  1) skills find [query] [--owner <owner>]{Reset}");
-            Sys.OutLine($"{Dim}  2) skills add <owner/repo@skill>{Reset}");
-            Sys.OutLine();
-            Sys.OutLine($"{Dim}Usage: skills find <query> [--owner <owner>]{Reset}");
+            Term.OutLine($"{Dim}Tip: if running in a coding agent, follow these steps:{Reset}");
+            Term.OutLine($"{Dim}  1) skills find [query] [--owner <owner>]{Reset}");
+            Term.OutLine($"{Dim}  2) skills add <owner/repo@skill>{Reset}");
+            Term.OutLine();
+            Term.OutLine($"{Dim}Usage: skills find <query> [--owner <owner>]{Reset}");
             return;
         }
 
@@ -264,21 +247,21 @@ internal static partial class FindCommand
         Telemetry.Track(("event", "find"), ("query", ""), ("resultCount", chosen != null ? "1" : "0"), ("interactive", "1"));
         if (chosen == null)
         {
-            Sys.OutLine($"{Dim}Search cancelled{Reset}");
-            Sys.OutLine();
+            Term.OutLine($"{Dim}Search cancelled{Reset}");
+            Term.OutLine();
             return;
         }
         var package = chosen.Source.Length == 0 ? chosen.Slug : chosen.Source;
-        Sys.OutLine();
-        Sys.OutLine($"{Text}Installing {Bold}{chosen.Name}{Reset} from {Dim}{package}{Reset}…");
-        Sys.OutLine();
+        Term.OutLine();
+        Term.OutLine($"{Text}Installing {Bold}{chosen.Name}{Reset} from {Dim}{package}{Reset}…");
+        Term.OutLine();
         var (sources, opts, _) = AddCommand.ParseOptions([package, "--skill", chosen.Name]);
         AddCommand.Run(sources, opts);
-        Sys.OutLine();
+        Term.OutLine();
         var isPublic = OwnerRepoFromString(package) is var (o, r) && SourceParser.IsRepoPrivate(o, r) == false;
-        Sys.OutLine(isPublic
+        Term.OutLine(isPublic
             ? $"{Dim}View the skill at{Reset} {Text}https://skills.sh/{chosen.Slug}{Reset}"
             : $"{Dim}Discover more skills at{Reset} {Text}https://skills.sh{Reset}");
-        Sys.OutLine();
+        Term.OutLine();
     }
 }

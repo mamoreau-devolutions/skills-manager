@@ -114,11 +114,11 @@ internal static partial class Ui
 
     public static int CountVisualRows(IEnumerable<string> lines, int? columns)
     {
-        var cols = columns is > 0 ? columns.Value : Sys.TerminalColumns() ?? 80;
+        var cols = columns is > 0 ? columns.Value : Term.TerminalColumns() ?? 80;
         return lines.Sum(l => VisualRowsForLine(l, cols));
     }
 
-    private static int Columns() => Sys.TerminalColumns() ?? 80;
+    private static int Columns() => Term.TerminalColumns() ?? 80;
 
     // ─── wrap-ansi ({ hard: true, trim: false }) ───
 
@@ -248,11 +248,11 @@ internal static partial class Ui
 
     // ─── Static output ───
 
-    public static void Intro(string title) => Sys.Out($"{Style.Gray(BarStart)}  {title}\n");
+    public static void Intro(string title) => Term.Out($"{Style.Gray(BarStart)}  {title}\n");
 
-    public static void Outro(string message) => Sys.Out($"{Style.Gray(Bar)}\n{Style.Gray(BarEnd)}  {message}\n\n");
+    public static void Outro(string message) => Term.Out($"{Style.Gray(Bar)}\n{Style.Gray(BarEnd)}  {message}\n\n");
 
-    public static void Cancel(string message) => Sys.Out($"{Style.Gray(BarEnd)}  {Style.Red(message)}\n\n");
+    public static void Cancel(string message) => Term.Out($"{Style.Gray(BarEnd)}  {Style.Red(message)}\n\n");
 
     private static void LogWithSymbol(string message, string symbol)
     {
@@ -261,7 +261,7 @@ internal static partial class Ui
         var parts = message.Split('\n');
         lines.Add(parts[0].Length > 0 ? $"{symbol}  {parts[0]}" : symbol);
         foreach (var p in parts.Skip(1)) lines.Add(p.Length > 0 ? $"{bar}  {p}" : bar);
-        Sys.Out(string.Join("\n", lines) + "\n");
+        Term.Out(string.Join("\n", lines) + "\n");
     }
 
     public static class Log
@@ -285,7 +285,7 @@ internal static partial class Ui
         var body = lines.Select(m => $"{Style.Gray(Bar)}  {m}{new string(' ', Math.Max(0, len - VisibleWidth(m)))}{Style.Gray(Bar)}");
         var top = $"{Style.Green(StepSubmit)}  {Style.Reset(title)} {Style.Gray(Repeat(BarH, Math.Max(len - titleLen - 1, 1)) + CornerTopRight)}";
         var bottom = Style.Gray(ConnectLeft + Repeat(BarH, len + 2) + CornerBottomRight);
-        Sys.Out($"{Style.Gray(Bar)}\n{top}\n{string.Join("\n", body)}\n{bottom}\n");
+        Term.Out($"{Style.Gray(Bar)}\n{top}\n{string.Join("\n", body)}\n{bottom}\n");
     }
 
     public static string Repeat(string s, int n) => n <= 0 ? "" : string.Concat(Enumerable.Repeat(s, n));
@@ -329,7 +329,7 @@ internal static partial class Ui
         /// A spinner that prints nothing (used in --json mode).
         public static Spinner Inert() => new(true);
 
-        private static bool Animated() => Sys.StdoutIsTty() && !Sys.StdoutRedirected;
+        private static bool Animated() => Term.StdoutIsTty() && !Term.StdoutRedirected;
 
         public void Start(string msg)
         {
@@ -344,7 +344,7 @@ internal static partial class Ui
             _stop = false;
             lock (FrameLock) _activeSpinner = this;
             // clack hides the cursor for the spinner's lifetime, even without a TTY.
-            Sys.Out($"\x1b[?25l{Style.Gray(Bar)}\n");
+            Term.Out($"\x1b[?25l{Style.Gray(Bar)}\n");
             _animated = Animated();
             if (!_animated) return;
             string[] frames = Unicode.Value ? ["◒", "◐", "◓", "◑"] : ["•", "o", "O", "0"];
@@ -360,7 +360,7 @@ internal static partial class Ui
                         if (_stop) break;
                         var d = new string('.', Math.Min(3, (int)Math.Floor(dots)));
                         var clear = i > 0 ? "\x1b[1G\x1b[J" : "";
-                        Sys.Out($"{clear}{Style.Magenta(frames[i % frames.Length])}  {_message}{d}");
+                        Term.Out($"{clear}{Style.Magenta(frames[i % frames.Length])}  {_message}{d}");
                     }
                     i++;
                     dots = dots < 4 ? dots + 0.125 : 0;
@@ -382,7 +382,7 @@ internal static partial class Ui
             {
                 _thread.Join();
                 _thread = null;
-                Sys.Out("\x1b[1G\x1b[J");
+                Term.Out("\x1b[1G\x1b[J");
             }
         }
 
@@ -395,7 +395,7 @@ internal static partial class Ui
             {
                 if (ReferenceEquals(_activeSpinner, this)) _activeSpinner = null;
             }
-            Sys.Out($"{Style.Green(StepSubmit)}  {msg}\n\x1b[?25h");
+            Term.Out($"{Style.Green(StepSubmit)}  {msg}\n\x1b[?25h");
         }
 
         internal void StopForExit(int code)
@@ -405,7 +405,7 @@ internal static partial class Ui
             _running = false;
             var clear = _animated ? "\x1b[1G\x1b[J" : "";
             var msg = code > 1 ? "Something went wrong" : "Canceled";
-            Sys.Out($"{clear}{StopSymbol(code)}  {msg}\n\x1b[?25h");
+            Term.Out($"{clear}{StopSymbol(code)}  {msg}\n\x1b[?25h");
         }
     }
 
@@ -418,11 +418,11 @@ internal static partial class Ui
         if (_cursorHidden)
         {
             _cursorHidden = false;
-            Sys.Out("\x1b[?25h");
+            Term.Out("\x1b[?25h");
         }
         try
         {
-            if (Sys.StdinIsTty()) Console.TreatControlCAsInput = false;
+            if (Term.StdinIsTty()) Console.TreatControlCAsInput = false;
         }
         catch
         {
@@ -433,7 +433,7 @@ internal static partial class Ui
     /// Prepare the console for key-by-key input; false when stdin is not a TTY.
     public static bool EnterRawMode()
     {
-        if (!Sys.StdinIsTty()) return false;
+        if (!Term.StdinIsTty()) return false;
         try
         {
             Console.TreatControlCAsInput = true;
@@ -513,13 +513,13 @@ internal static partial class Ui
     public static void HideCursor()
     {
         _cursorHidden = true;
-        Sys.Out("\x1b[?25l");
+        Term.Out("\x1b[?25l");
     }
 
     public static void ShowCursor()
     {
         _cursorHidden = false;
-        Sys.Out("\x1b[?25h");
+        Term.Out("\x1b[?25h");
     }
 
     /// Redraws a block of lines in place.
@@ -531,7 +531,7 @@ internal static partial class Ui
         {
             var clear = _lastHeight > 0 ? $"\x1b[{_lastHeight}A\x1b[J" : "";
             var body = text.TrimEnd('\n');
-            Sys.Out($"\r{clear}{body}\n");
+            Term.Out($"\r{clear}{body}\n");
             _lastHeight = CountVisualRows(body.Split('\n'), null);
         }
     }
