@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\src\Skills.csproj" />
+    <ProjectReference Include="..\lib\Devolutions.AgentSkills\Devolutions.AgentSkills.csproj" />
   </ItemGroup>
 
   <ItemGroup>

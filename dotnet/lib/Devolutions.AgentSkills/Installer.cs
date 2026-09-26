@@ -107,7 +107,13 @@ internal static partial class Installer
         public bool SameAs(PopulatedFrom o) => SourceDir == o.SourceDir && ReferenceEquals(Files, o.Files) && Eve == o.Eve;
     }
 
-    private static readonly Dictionary<string, PopulatedFrom> Populated = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, PopulatedFrom> ProcessPopulated = new(StringComparer.Ordinal);
+
+    /// One run per process in the CLI; one per call for the public API, so
+    /// concurrent calls never reset each other's state.
+    private static Dictionary<string, PopulatedFrom> Populated => Sys.Context is { } c
+        ? (Dictionary<string, PopulatedFrom>)LazyInitializer.EnsureInitialized(ref c.PopulatedCache, () => new Dictionary<string, PopulatedFrom>(StringComparer.Ordinal))
+        : ProcessPopulated;
 
     /// Start a new install run: forget every directory populated so far.
     public static void ResetPopulated()
@@ -285,11 +291,11 @@ internal static partial class Installer
             }
             catch (FileNotFoundException) when (e.IsSymlink)
             {
-                Sys.ErrLine($"Skipping broken symlink: {e.FullPath}");
+                Sys.Warn($"Skipping broken symlink: {e.FullPath}");
             }
             catch (DirectoryNotFoundException) when (e.IsSymlink)
             {
-                Sys.ErrLine($"Skipping broken symlink: {e.FullPath}");
+                Sys.Warn($"Skipping broken symlink: {e.FullPath}");
             }
         }
     }

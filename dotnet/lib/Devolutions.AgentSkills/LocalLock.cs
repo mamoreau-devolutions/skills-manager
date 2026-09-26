@@ -20,6 +20,9 @@ internal static class LocalLock
     private const string FileName = "skills-lock.json";
     private const int CurrentVersion = 1;
 
+    /// Serializes read-modify-write cycles between threads of one process.
+    private static readonly object Gate = new();
+
     public static string GetPath(string? cwd = null) => NodePath.Join(cwd ?? Sys.Cwd(), FileName);
 
     private static LocalLockFile Empty() => new();
@@ -109,16 +112,22 @@ internal static class LocalLock
 
     public static void AddSkill(string name, JsonObject entry, string? cwd = null)
     {
-        var l = Read(cwd);
-        l.Skills[name] = entry;
-        Write(l, cwd);
+        lock (Gate)
+        {
+            var l = Read(cwd);
+            l.Skills[name] = entry;
+            Write(l, cwd);
+        }
     }
 
     public static bool RemoveSkill(string name, string? cwd = null)
     {
-        var l = Read(cwd);
-        if (!l.Skills.Remove(name)) return false;
-        Write(l, cwd);
-        return true;
+        lock (Gate)
+        {
+            var l = Read(cwd);
+            if (!l.Skills.Remove(name)) return false;
+            Write(l, cwd);
+            return true;
+        }
     }
 }

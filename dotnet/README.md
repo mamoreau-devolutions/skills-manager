@@ -12,6 +12,27 @@ only these external tools: `git` for cloning, and optionally `gh` (GitHub CLI
 auth fallbacks), `ntn` (Notion), and `claude`/`codex`/`sarvam-code` for
 `skills use --agent`.
 
+## Library (NuGet)
+
+The core is also a NuGet package,
+[`Devolutions.AgentSkills`](lib/Devolutions.AgentSkills/README.md), for
+applications that manage skills themselves (for example UniGetUI). It exposes
+the CLI's operations as a UI-free API on `SkillsManager`:
+
+- `GetAgents` and `GetInstalledSkills`
+- `Search`, which queries skills.sh
+- `GetAvailableSkills`, the equivalent of `add --list`
+- `Install`, `Remove`, `CheckForUpdates` and `Update`
+
+Each has an `Async` variant, and the long-running ones take progress and
+cancellation arguments. The library writes the same directories and lock files
+as the CLI, is trim- and NativeAOT-safe, and never prompts, prints or exits the
+process. The CLI is built on the same core.
+
+```bash
+dotnet pack lib/Devolutions.AgentSkills -c Release -o nupkg   # → nupkg/Devolutions.AgentSkills.<version>.nupkg
+```
+
 ## Build
 
 ```bash
@@ -73,38 +94,52 @@ skills experimental_sync -y
 
 ## Layout
 
+The code is split into two projects:
+
+- `lib/Devolutions.AgentSkills/` is the library. It holds the core: agents,
+  sources, discovery, installer, lock files and HTTP/Git. The public API is in
+  `Api/`.
+- `src/` is the CLI (assembly `skills`). It holds the terminal UI and the
+  command flows, and uses the library's internals.
+
+In the table below, `†` marks files in the library. `InstallRecords.cs`,
+`Removal.cs`, `UpdateChecks.cs` and `SearchApi.cs` hold the parts of
+`add.ts`, `remove.ts`, `update.ts` and `find.ts` that the CLI and the public
+API share. `Pinning.cs` (pinned lock entries) is also in the library, so API
+update checks leave pinned skills alone, as `skills update` does.
+
 Each file ports the TypeScript module (and the Rust module) of the same name
 in the reference CLI's [`src/`](https://github.com/vercel-labs/skills/tree/main/src):
 
-| TypeScript (`src/`)                          | C# (`src/`)                                        |
+| TypeScript (`src/`)                          | C#                                                 |
 | -------------------------------------------- | -------------------------------------------------- |
 | `cli.ts`                                     | `Main.cs`                                          |
 | `add.ts`                                     | `AddHelpers.cs`, `AddWellKnown.cs`, `AddRun.cs`    |
-| `agents.ts`, `types.ts`                      | `Agents.cs`, `Types.cs`                            |
-| `archive.ts`                                 | `Archive.cs`                                       |
-| `blob.ts`                                    | `Blob.cs`                                          |
+| `agents.ts`, `types.ts`                      | `Agents.cs`†, `Types.cs`†                          |
+| `archive.ts`                                 | `Archive.cs`†                                      |
+| `blob.ts`                                    | `Blob.cs`†                                         |
 | `detect-agent.ts` (+ `@vercel/detect-agent`) | `DetectAgent.cs`                                   |
-| `download-source.ts`                         | `DownloadSource.cs`                                |
+| `download-source.ts`                         | `DownloadSource.cs`†                               |
 | `find.ts`                                    | `Find.cs`                                          |
-| `frontmatter.ts` (+ `yaml`)                  | `Frontmatter.cs`                                   |
-| `git.ts` (+ `simple-git`)                    | `Git.cs`                                           |
-| `github-host.ts`                             | `GitHubHost.cs`                                    |
+| `frontmatter.ts` (+ `yaml`)                  | `Frontmatter.cs`†                                  |
+| `git.ts` (+ `simple-git`)                    | `Git.cs`†                                          |
+| `github-host.ts`                             | `GitHubHost.cs`†                                   |
 | `install.ts`                                 | `InstallLock.cs`                                   |
-| `installer.ts`                               | `Installer.cs`                                     |
+| `installer.ts`                               | `Installer.cs`†                                    |
 | `list.ts`                                    | `List.cs`                                          |
-| `local-lock.ts`                              | `LocalLock.cs`                                     |
+| `local-lock.ts`                              | `LocalLock.cs`†                                    |
 | `notion-test.ts`                             | `Notion.cs`                                        |
-| `plugin-manifest.ts`                         | `PluginManifest.cs`                                |
+| `plugin-manifest.ts`                         | `PluginManifest.cs`†                               |
 | `prompts/search-multiselect.ts`              | `SearchMultiselect.cs`                             |
-| `providers/wellknown.ts`                     | `WellKnown.cs`                                     |
+| `providers/wellknown.ts`                     | `WellKnown.cs`†                                    |
 | `remove.ts`                                  | `Remove.cs`                                        |
-| `sanitize.ts`                                | `Sanitize.cs`                                      |
-| `skill-lock.ts`                              | `SkillLock.cs`                                     |
-| `skill-relocation.ts`, `update-source.ts`    | `UpdateSource.cs`                                  |
-| `skills.ts`                                  | `Skills.cs`                                        |
-| `source-parser.ts`                           | `SourceParser.cs`                                  |
+| `sanitize.ts`                                | `Sanitize.cs`†                                     |
+| `skill-lock.ts`                              | `SkillLock.cs`†                                    |
+| `skill-relocation.ts`, `update-source.ts`    | `UpdateSource.cs`†                                 |
+| `skills.ts`                                  | `Skills.cs`†                                       |
+| `source-parser.ts`                           | `SourceParser.cs`†                                 |
 | `sync.ts`                                    | `Sync.cs`                                          |
-| `telemetry.ts`                               | `Telemetry.cs`                                     |
+| `telemetry.ts`                               | `Telemetry.cs`†                                    |
 | `update.ts`                                  | `Update.cs`                                        |
 | `use.ts`                                     | `Use.cs`                                           |
 
@@ -114,10 +149,12 @@ Supporting files stand in for Node built-ins and npm packages:
   `relative`, posix and win32). The TS code checks for path traversal by
   comparing normalized path strings by prefix, so the port reproduces those
   rules exactly instead of using `System.IO.Path`.
-- `Sys.cs`: `os.homedir()` and `os.tmpdir()` (libuv rules), `process.exit`
-  semantics with exit hooks, Windows console VT mode, and stdout routing.
-  `add --json` sends all human-readable output to stderr, so stdout carries
-  exactly one JSON value.
+- `Sys.cs` (library): `os.homedir()` and `os.tmpdir()` (libuv rules), the
+  environment, and the per-call context that gives each public API call its
+  own project and home directories, warning sink and cancellation.
+- `Term.cs`: `process.exit` semantics with exit hooks, Windows console VT
+  mode, and stdout routing. `add --json` sends all human-readable output to
+  stderr, so stdout carries exactly one JSON value.
 - `Fs.cs`: `fs` behavior the CLI depends on. On Windows, directory links are
   created as junctions (`FSCTL_SET_REPARSE_POINT`), as Node does, and
   removing a link never touches its target.
@@ -141,8 +178,10 @@ Supporting files stand in for Node built-ins and npm packages:
 This folder is self-contained. It builds, tests and publishes without the
 TypeScript CLI or Node.js. Only the parity harness needs them.
 
-- `tests/`: 75 xUnit tests, ported from the Rust unit tests, including a check
-  that `Program.Version` matches the csproj `<Version>`.
+- `tests/`: 111 xUnit tests. Most are ported from the Rust unit tests, including
+  a check that `Program.Version` matches the csproj `<Version>`. The
+  `SkillsManagerTests` cover the public API against a sandbox home and project,
+  using local sources only.
 - [`parity/parity.ps1`](parity/parity.ps1) (PowerShell 7) runs the shared
   harness in [`../rust/parity/parity.ps1`](../rust/parity/parity.ps1) against
   `publish/skills(.exe)`. The harness runs the reference TypeScript CLI and the

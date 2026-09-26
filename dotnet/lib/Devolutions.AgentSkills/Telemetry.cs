@@ -22,7 +22,8 @@ internal static class Telemetry
     private static bool IsCi() =>
         new[] { "CI", "GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI", "TRAVIS", "BUILDKITE", "JENKINS_URL", "TEAMCITY_VERSION" }.Any(Sys.EnvTruthy);
 
-    public static bool Enabled => !Sys.EnvTruthy("DISABLE_TELEMETRY") && !Sys.EnvTruthy("DO_NOT_TRACK");
+    /// The CLI reports by default; a public API call only when its host opted in.
+    public static bool Enabled => (Sys.Context?.Telemetry ?? true) && !Sys.EnvTruthy("DISABLE_TELEMETRY") && !Sys.EnvTruthy("DO_NOT_TRACK");
 
     /// Security audit results; null on any error or timeout.
     public static JsonObject? FetchAuditData(string source, IReadOnlyList<string> skillSlugs, int timeoutMs = 3000)
@@ -52,7 +53,12 @@ internal static class Telemetry
             if (v != null) Set(k, v);
         var url = $"{TelemetryUrl}?{UrlUtil.SearchParams(pairs.ToArray())}";
         var task = Task.Run(() => HttpRequest.Get(url).Timeout(TimeSpan.FromSeconds(10)).TrySend());
-        lock (Pending) Pending.Add(task);
+        lock (Pending)
+        {
+            // A long-running host never calls Flush: drop finished requests.
+            Pending.RemoveAll(t => t.IsCompleted);
+            Pending.Add(task);
+        }
     }
 
     /// Wait (bounded) for in-flight telemetry requests.

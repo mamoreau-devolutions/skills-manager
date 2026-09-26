@@ -218,7 +218,7 @@ internal static partial class Fs
         Directory.Delete(p, false);
     }
 
-    /// Copy a file, preserving the permission bits on Unix (`chmod(dest, mode & 0o777)`).
+    /// Copy a file, preserving the permission bits on Unix (`chmod(dest, mode &amp; 0o777)`).
     public static void CopyFile(string src, string dest)
     {
         File.Copy(src, dest, overwrite: true);

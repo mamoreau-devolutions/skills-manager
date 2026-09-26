@@ -30,21 +30,9 @@ internal sealed class AddOptions
 internal static partial class AddCommand
 {
     private const string EveAgentLabel = "eve agent";
-    private static readonly string[] BlobAllowedOwners = ["vercel", "vercel-labs", "heygen-com", "remotion-dev"];
+    public static string? GetLockSource(string parsedUrl, string? normalized) => InstallRecords.GetLockSource(parsedUrl, normalized);
 
-    public static string? GetLockSource(string parsedUrl, string? normalized)
-    {
-        if (parsedUrl.StartsWith("git@") || parsedUrl.StartsWith("ssh://")) return parsedUrl;
-        if (parsedUrl.StartsWith("http://") || parsedUrl.StartsWith("https://"))
-        {
-            var u = WebUrl.Parse(parsedUrl);
-            if (u == null) return normalized;
-            if (u.Hostname != "github.com") return parsedUrl;
-        }
-        return normalized;
-    }
-
-    public static string? GetProjectLockSourceUrl(string sourceType, string sourceUrl) => sourceType is "git" or "gitlab" ? sourceUrl : null;
+    public static string? GetProjectLockSourceUrl(string sourceType, string sourceUrl) => InstallRecords.GetProjectLockSourceUrl(sourceType, sourceUrl);
 
     // ─── Security advisory ───
 
@@ -221,12 +209,12 @@ internal static partial class AddCommand
     private static void ExitInstallationCancelled()
     {
         Ui.Cancel("Installation cancelled");
-        if (!Sys.StdinIsTty())
+        if (!Term.StdinIsTty())
         {
-            Sys.ErrLine("Interactive prompt required but stdin is not a TTY. Nothing was installed. Use --agent <name> (or --agent '*') and -y to run non-interactively.");
-            Sys.Exit(1);
+            Term.ErrLine("Interactive prompt required but stdin is not a TTY. Nothing was installed. Use --agent <name> (or --agent '*') and -y to run non-interactively.");
+            Term.Exit(1);
         }
-        Sys.Exit(0);
+        Term.Exit(0);
     }
 
     private static T OrCancelled<T>(T? v) where T : class
@@ -322,7 +310,7 @@ internal static partial class AddCommand
         if (invalid.Count == 0) return list;
         Ui.Log.Error($"Invalid agents: {string.Join(", ", invalid)}");
         Ui.Log.Info($"Valid agents: {string.Join(", ", Agents.AllNames())}");
-        Sys.Exit(1);
+        Term.Exit(1);
         return null!;
     }
 

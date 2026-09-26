@@ -100,9 +100,9 @@ internal static class ListCommand
             var invalid = list.Where(a => Agents.Find(a) == null).ToList();
             if (invalid.Count > 0)
             {
-                Sys.OutLine($"{Yellow}Invalid agents: {string.Join(", ", invalid)}{Reset}");
-                Sys.OutLine($"{Dim}Valid agents: {string.Join(", ", Agents.AllNames())}{Reset}");
-                Sys.Exit(1);
+                Term.OutLine($"{Yellow}Invalid agents: {string.Join(", ", invalid)}{Reset}");
+                Term.OutLine($"{Dim}Valid agents: {string.Join(", ", Agents.AllNames())}{Reset}");
+                Term.Exit(1);
             }
             agentFilter = list;
         }
@@ -137,15 +137,15 @@ internal static class ListCommand
                 AddExtensionJson(obj, HasLockEntry(s.Name), e, s.CanonicalPath);
                 arr.Add((JsonNode)obj);
             }
-            Sys.OutLine(Json.Stringify(arr));
+            Term.OutLine(Json.Stringify(arr));
             return;
         }
 
         var scopeLabel = scope ? "Global" : "Project";
         if (installed.Count == 0)
         {
-            Sys.OutLine($"{Dim}No {scopeLabel.ToLowerInvariant()} skills found.{Reset}");
-            Sys.OutLine(scope ? $"{Dim}Try listing project skills without -g{Reset}" : $"{Dim}Try listing global skills with -g{Reset}");
+            Term.OutLine($"{Dim}No {scopeLabel.ToLowerInvariant()} skills found.{Reset}");
+            Term.OutLine(scope ? $"{Dim}Try listing project skills without -g{Reset}" : $"{Dim}Try listing global skills with -g{Reset}");
             return;
         }
 
@@ -159,8 +159,8 @@ internal static class ListCommand
             var entry = LockEntry(skill.Name);
             var source = Json.NonEmpty(entry, "source");
             var sourceLabel = SourceLabel(HasLockEntry(skill.Name), entry, source, skill.CanonicalPath);
-            Sys.OutLine($"{prefix}{Cyan}{paddedName}{Reset} {Dim}{paddedPath}{Reset}");
-            Sys.OutLine($"{prefix}  {Dim}Agents:{Reset} {agentInfo}  {Dim}Source:{Reset} {sourceLabel}");
+            Term.OutLine($"{prefix}{Cyan}{paddedName}{Reset} {Dim}{paddedPath}{Reset}");
+            Term.OutLine($"{prefix}  {Dim}Agents:{Reset} {agentInfo}  {Dim}Source:{Reset} {sourceLabel}");
         }
 
         (int, int) Widths(IEnumerable<InstalledSkill> skills)
@@ -174,8 +174,8 @@ internal static class ListCommand
             return (n, p);
         }
 
-        Sys.OutLine($"{Bold}{scopeLabel} Skills{Reset}");
-        Sys.OutLine();
+        Term.OutLine($"{Bold}{scopeLabel} Skills{Reset}");
+        Term.OutLine();
 
         var groups = new List<(string Name, List<InstalledSkill> Skills)>();
         var ungrouped = new List<InstalledSkill>();
@@ -197,24 +197,24 @@ internal static class ListCommand
         {
             foreach (var (group, skills) in Collate.StableSort(groups, (a, b) => string.CompareOrdinal(a.Name, b.Name)))
             {
-                Sys.OutLine($"{Bold}{KebabToTitle(group)}{Reset}");
+                Term.OutLine($"{Bold}{KebabToTitle(group)}{Reset}");
                 var (n, p) = Widths(skills);
                 foreach (var s in skills) PrintSkill(s, true, n, p);
-                Sys.OutLine();
+                Term.OutLine();
             }
             if (ungrouped.Count > 0)
             {
-                Sys.OutLine($"{Bold}General{Reset}");
+                Term.OutLine($"{Bold}General{Reset}");
                 var (n, p) = Widths(ungrouped);
                 foreach (var s in ungrouped) PrintSkill(s, true, n, p);
-                Sys.OutLine();
+                Term.OutLine();
             }
         }
         else
         {
             var (n, p) = Widths(installed);
             foreach (var s in installed) PrintSkill(s, false, n, p);
-            Sys.OutLine();
+            Term.OutLine();
         }
     }
 }

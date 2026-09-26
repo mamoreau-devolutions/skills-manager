@@ -33,8 +33,8 @@ internal static partial class AddCommand
         {
             if (_jsonState is not { Emitted: false } state) return;
             state.Emitted = true;
-            Sys.StdoutRedirected = false;
-            Sys.RealStdout(Json.Stringify(state.Results) + "\n");
+            Term.StdoutRedirected = false;
+            Term.RealStdout(Json.Stringify(state.Results) + "\n");
         }
     }
 
@@ -59,11 +59,11 @@ internal static partial class AddCommand
         {
             if (Json)
             {
-                if (message != null) Sys.ErrLine(message);
+                if (message != null) Term.ErrLine(message);
                 if (code != 0 && JsonIsEmpty()) JsonPush(new JsonObject { ["status"] = "failed", ["error"] = message ?? "Installation failed" });
                 EmitJson();
             }
-            Sys.Exit(code);
+            Term.Exit(code);
         }
 
         [System.Diagnostics.CodeAnalysis.DoesNotReturn]
@@ -113,21 +113,21 @@ internal static partial class AddCommand
         if (jsonMode)
         {
             lock (JsonLock) _jsonState = new JsonState();
-            Sys.StdoutRedirected = true;
-            Sys.OnExit(EmitJson);
+            Term.StdoutRedirected = true;
+            Term.OnExit(EmitJson);
         }
 
         if (source == null)
         {
-            Sys.OutLine();
-            Sys.OutLine($"{Pc.BgRed(Pc.White(Pc.Bold(" ERROR ")))} {Pc.Red("Missing required argument: source")}");
-            Sys.OutLine();
-            Sys.OutLine(Pc.Dim("  Usage:"));
-            Sys.OutLine($"    {Pc.Cyan("skills add")} {Pc.Yellow("<source>")} {Pc.Dim("[options]")}");
-            Sys.OutLine();
-            Sys.OutLine(Pc.Dim("  Example:"));
-            Sys.OutLine($"    {Pc.Cyan("skills add")} {Pc.Yellow("vercel-labs/agent-skills")}");
-            Sys.OutLine();
+            Term.OutLine();
+            Term.OutLine($"{Pc.BgRed(Pc.White(Pc.Bold(" ERROR ")))} {Pc.Red("Missing required argument: source")}");
+            Term.OutLine();
+            Term.OutLine(Pc.Dim("  Usage:"));
+            Term.OutLine($"    {Pc.Cyan("skills add")} {Pc.Yellow("<source>")} {Pc.Dim("[options]")}");
+            Term.OutLine();
+            Term.OutLine(Pc.Dim("  Example:"));
+            Term.OutLine($"    {Pc.Cyan("skills add")} {Pc.Yellow("vercel-labs/agent-skills")}");
+            Term.OutLine();
             ctx.Exit(1, "Missing required argument: source");
         }
 
@@ -151,10 +151,10 @@ internal static partial class AddCommand
         if (jsonMode && !options.Yes) ctx.Exit(1, "The --json flag requires --yes (or --all) to run non-interactively.");
         if (jsonMode && options.List) ctx.Exit(1, "The --json flag cannot be combined with --list.");
 
-        Sys.OutLine();
+        Term.OutLine();
         if (!agentResult.IsAgent) Ui.Intro(Pc.BgCyan(Pc.Black(" skills ")));
         if (agentResult.IsAgent) Ui.Log.Info($"{Pc.BgCyan(Pc.Black(Pc.Bold($" {agentResult.Name} ")))} Agent detected — installing non-interactively");
-        else if (!Sys.StdinIsTty()) ctx.ShowInstallTip();
+        else if (!Term.StdinIsTty()) ctx.ShowInstallTip();
 
         try
         {
@@ -182,8 +182,8 @@ internal static partial class AddCommand
         }
         if (jsonMode)
         {
-            Sys.ClearExitHooks();
-            Sys.StdoutRedirected = false;
+            Term.ClearExitHooks();
+            Term.StdoutRedirected = false;
         }
         ctx.Cleanup();
     }
@@ -283,8 +283,7 @@ internal static partial class AddCommand
             var attempted = false;
             if (SourceParser.GetOwnerRepo(parsed) is { } or)
             {
-                var owner = or.Split('/')[0].ToLowerInvariant();
-                if (owner.Length > 0 && (Blob.IsAllowedRepo(or.ToLowerInvariant()) || BlobAllowedOwners.Contains(owner)))
+                if (InstallRecords.IsBlobEligible(or))
                 {
                     attempted = true;
                     spinner.Start("Fetching skills…");
@@ -329,29 +328,29 @@ internal static partial class AddCommand
 
         if (options.List)
         {
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Log.Step(Pc.Bold("Available Skills"));
             var (groups, ungrouped) = GroupByPlugin(skills, s => s.PluginName);
             foreach (var (g, list) in groups)
             {
-                Sys.OutLine(Pc.Bold(KebabToTitle(g)));
+                Term.OutLine(Pc.Bold(KebabToTitle(g)));
                 foreach (var s in list)
                 {
                     Ui.Log.Message($"  {Pc.Cyan(SkillDiscovery.DisplayName(s))}");
                     Ui.Log.Message($"    {Pc.Dim(s.Description)}");
                 }
-                Sys.OutLine();
+                Term.OutLine();
             }
             if (ungrouped.Count > 0)
             {
-                if (groups.Count > 0) Sys.OutLine(Pc.Bold("General"));
+                if (groups.Count > 0) Term.OutLine(Pc.Bold("General"));
                 foreach (var s in ungrouped)
                 {
                     Ui.Log.Message($"  {Pc.Cyan(SkillDiscovery.DisplayName(s))}");
                     Ui.Log.Message($"    {Pc.Dim(s.Description)}");
                 }
             }
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Outro("Use --skill <name> to install specific skills");
             ctx.Cleanup();
             ctx.Exit(0, null);
@@ -583,7 +582,7 @@ internal static partial class AddCommand
             }
             PrintSummary(sungrouped);
         }
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Note(string.Join("\n", summary), "Installation Summary");
 
         var auditData = audit.Result;
@@ -615,25 +614,16 @@ internal static partial class AddCommand
             }
         }
         spinner.Stop("Installation complete");
-        Sys.OutLine();
+        Term.OutLine();
 
         var successful = results.Where(r => r.R.Success).ToList();
         var failed = results.Where(r => !r.R.Success).ToList();
         var okNames = successful.Select(r => r.Skill).ToHashSet();
 
         var tempDir = ctx.TempDir;
-        var skillFiles = new JsonObject();
-        foreach (var s in selected)
-        {
-            if (blobResult != null && s.Blob is { } b) skillFiles[s.Name] = b.RepoPath;
-            else if (tempDir != null && s.Path == tempDir) skillFiles[s.Name] = "SKILL.md";
-            else if (tempDir != null && s.Path.StartsWith(tempDir + NodePath.Sep, StringComparison.Ordinal))
-                skillFiles[s.Name] = $"{string.Join("/", s.Path[(tempDir.Length + 1)..].Split(NodePath.Sep))}/SKILL.md";
-        }
+        var skillFiles = InstallRecords.ComputeSkillFiles(selected, blobResult, tempDir);
 
-        var normalizedSource = directDownload ? null : SourceParser.GetOwnerRepo(parsed);
-        var lockSource = directDownload ? null : GetLockSource(parsed.Url, normalizedSource);
-        var projectLockSourceUrl = directDownload ? null : GetProjectLockSourceUrl(parsed.Kind, parsed.Url);
+        var normalizedSource = InstallRecords.GetLockSources(parsed, directDownload).Normalized;
 
         if (normalizedSource != null)
         {
@@ -650,79 +640,9 @@ internal static partial class AddCommand
             }
         }
 
-        var hashes = new Dictionary<string, string>();
-        if (successful.Count > 0 && (jsonMode || !installGlobally))
-        {
-            foreach (var s in selected)
-            {
-                var name = SkillDiscovery.DisplayName(s);
-                if (!okNames.Contains(name) || hashes.ContainsKey(name)) continue;
-                var h = blobResult != null && s.Blob is { } b ? b.SnapshotHash : TryComputeHash(s.Path);
-                if (h != null) hashes[name] = h;
-            }
-        }
-
-        if (successful.Count > 0 && installGlobally && normalizedSource != null)
-        {
-            var cachedTree = parsed.Kind == "github" && blobResult == null ? Blob.FetchRepoTree(normalizedSource, parsed.Ref, true) : null;
-            foreach (var s in selected)
-            {
-                if (!okNames.Contains(SkillDiscovery.DisplayName(s))) continue;
-                var skillPath = Json.AsString(skillFiles[s.Name]);
-                var folderHash = "";
-                if (blobResult != null && skillPath != null)
-                {
-                    folderHash = Blob.GetSkillFolderHashFromTree(blobResult.Tree, skillPath) ?? folderHash;
-                }
-                else if (parsed.Kind == "github" && skillPath != null && cachedTree != null)
-                {
-                    folderHash = Blob.GetSkillFolderHashFromTree(cachedTree, skillPath) ?? folderHash;
-                }
-                else if (skillPath != null && tempDir != null)
-                {
-                    folderHash = TryComputeHash(NodePath.Join(tempDir, NodePath.Dirname(skillPath))) ?? folderHash;
-                }
-                var e = new JsonObject
-                {
-                    ["source"] = lockSource ?? normalizedSource,
-                    ["sourceType"] = parsed.Kind,
-                    ["sourceUrl"] = parsed.Url,
-                };
-                if (parsed.Ref != null)
-                {
-                    e["ref"] = parsed.Ref;
-                    if (pinned) e["pinned"] = true;
-                }
-                if (skillPath != null) e["skillPath"] = skillPath;
-                e["skillFolderHash"] = folderHash;
-                if (s.PluginName != null) e["pluginName"] = s.PluginName;
-                TryAddToGlobalLock(s.Name, e);
-            }
-        }
-
-        if (successful.Count > 0 && !installGlobally && !directDownload)
-        {
-            var eveSubagents = targetAgents.Contains("eve") ? eveTargets.Select(s => s ?? "").ToList() : null;
-            var record = eveSubagents != null && (eveSubagents.Count > 1 || eveSubagents.Any(s => s.Length > 0));
-            foreach (var s in selected)
-            {
-                var name = SkillDiscovery.DisplayName(s);
-                if (!okNames.Contains(name) || !hashes.TryGetValue(name, out var h)) continue;
-                var skillPath = Json.AsString(skillFiles[s.Name]);
-                var e = new JsonObject { ["source"] = string.IsNullOrEmpty(lockSource) ? parsed.Url : lockSource };
-                if (projectLockSourceUrl != null) e["sourceUrl"] = projectLockSourceUrl;
-                if (parsed.Ref != null)
-                {
-                    e["ref"] = parsed.Ref;
-                    if (pinned) e["pinned"] = true;
-                }
-                e["sourceType"] = parsed.Kind;
-                if (!string.IsNullOrEmpty(skillPath)) e["skillPath"] = skillPath;
-                e["computedHash"] = h;
-                if (record) e["subagents"] = new JsonArray(eveSubagents!.Select(x => (JsonNode?)x).ToArray());
-                TryAddToLocalLock(s.Name, e, cwd);
-            }
-        }
+        var eveSubagents = targetAgents.Contains("eve") ? eveTargets.Select(s => s ?? "").ToList() : null;
+        var hashes = InstallRecords.RecordInstalledSkills(parsed, directDownload, blobResult, tempDir, selected, skillFiles, okNames,
+            installGlobally, jsonMode, eveSubagents, cwd, pinned);
 
         if (jsonMode)
         {
@@ -756,14 +676,14 @@ internal static partial class AddCommand
             EmitJson();
             bool anySkipped;
             lock (JsonLock) anySkipped = _jsonState?.Results.Any(r => Json.Str(r, "status") == "skipped") == true;
-            if (failed.Count > 0 || anySkipped) Sys.ExitCode = 1;
+            if (failed.Count > 0 || anySkipped) Term.ExitCode = 1;
             return;
         }
 
         if (successful.Count > 0) PrintInstalledNote(successful, targetAgents, cwd);
         PrintFailures(failed);
 
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Outro(DoneOutro());
         ctx.Cleanup();
         PromptForFindSkills(options, targetAgents);
@@ -833,7 +753,7 @@ internal static partial class AddCommand
     /// One-time prompt to install the find-skills skill after an install.
     private static void PromptForFindSkills(AddOptions options, List<string> targetAgents)
     {
-        if (!Sys.StdinIsTty() || options.Yes) return;
+        if (!Term.StdinIsTty() || options.Yes) return;
         if (SkillLock.IsPromptDismissed("findSkillsPrompt")) return;
         void Dismiss()
         {
@@ -851,7 +771,7 @@ internal static partial class AddCommand
             Dismiss();
             return;
         }
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Log.Message(Pc.Dim("One-time prompt - you won't be asked again if you dismiss."));
         var answer = Ui.Confirm($"Install the {Pc.Cyan("find-skills")} skill? It helps your agent discover and suggest skills.");
         Dismiss();
@@ -859,7 +779,7 @@ internal static partial class AddCommand
         {
             var agents = targetAgents.Where(a => a != "replit").ToList();
             if (agents.Count == 0) return;
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Log.Step("Installing find-skills skill…");
             Run(["vercel-labs/skills"], new AddOptions { Skill = ["find-skills"], Global = true, Yes = true, Agent = agents });
         }

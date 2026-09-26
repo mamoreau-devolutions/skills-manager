@@ -88,6 +88,9 @@ jobs:
       - name: Test
         working-directory: dotnet
         run: dotnet test -c Release
+      - name: Pack library (Devolutions.AgentSkills)
+        working-directory: dotnet
+        run: dotnet pack lib/Devolutions.AgentSkills -c Release -o nupkg
       # NativeAOT is the build the README recommends; building it here also
       # runs the AOT and trim analyzers with warnings as errors.
       - name: Publish (NativeAOT)

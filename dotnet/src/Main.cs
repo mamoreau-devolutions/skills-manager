@@ -34,38 +34,38 @@ internal static class Program
 
     private static void ShowLogo()
     {
-        Sys.OutLine();
-        for (var i = 0; i < LogoLines.Length; i++) Sys.OutLine($"{Grays[i]}{LogoLines[i]}{Reset}");
+        Term.OutLine();
+        for (var i = 0; i < LogoLines.Length; i++) Term.OutLine($"{Grays[i]}{LogoLines[i]}{Reset}");
     }
 
     private static void ShowBanner()
     {
         ShowLogo();
-        Sys.OutLine();
-        Sys.OutLine($"{Dim}The open agent skills ecosystem{Reset}");
-        Sys.OutLine();
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills add {Dim}<package>{Reset}        {Dim}Add a new skill{Reset}");
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills use {Dim}<package>@<skill>{Reset} {Dim}Use a skill without installing{Reset}");
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills remove{Reset}               {Dim}Remove installed skills{Reset}");
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills list{Reset}                 {Dim}List installed skills{Reset}");
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills find {Dim}[query]{Reset}         {Dim}Search for skills{Reset}");
-        Sys.OutLine();
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills update{Reset}               {Dim}Update installed skills{Reset}");
-        Sys.OutLine();
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills experimental_install{Reset} {Dim}Restore from skills-lock.json{Reset}");
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills init {Dim}[name]{Reset}          {Dim}Create a new skill{Reset}");
-        Sys.OutLine($"  {Dim}${Reset} {Text}skills experimental_sync{Reset}    {Dim}Sync skills from node_modules{Reset}");
-        Sys.OutLine();
-        Sys.OutLine($"{Dim}try:{Reset} skills add vercel-labs/agent-skills");
-        Sys.OutLine();
-        Sys.OutLine($"Discover more skills at {Text}https://skills.sh/{Reset}");
-        Sys.OutLine();
+        Term.OutLine();
+        Term.OutLine($"{Dim}The open agent skills ecosystem{Reset}");
+        Term.OutLine();
+        Term.OutLine($"  {Dim}${Reset} {Text}skills add {Dim}<package>{Reset}        {Dim}Add a new skill{Reset}");
+        Term.OutLine($"  {Dim}${Reset} {Text}skills use {Dim}<package>@<skill>{Reset} {Dim}Use a skill without installing{Reset}");
+        Term.OutLine($"  {Dim}${Reset} {Text}skills remove{Reset}               {Dim}Remove installed skills{Reset}");
+        Term.OutLine($"  {Dim}${Reset} {Text}skills list{Reset}                 {Dim}List installed skills{Reset}");
+        Term.OutLine($"  {Dim}${Reset} {Text}skills find {Dim}[query]{Reset}         {Dim}Search for skills{Reset}");
+        Term.OutLine();
+        Term.OutLine($"  {Dim}${Reset} {Text}skills update{Reset}               {Dim}Update installed skills{Reset}");
+        Term.OutLine();
+        Term.OutLine($"  {Dim}${Reset} {Text}skills experimental_install{Reset} {Dim}Restore from skills-lock.json{Reset}");
+        Term.OutLine($"  {Dim}${Reset} {Text}skills init {Dim}[name]{Reset}          {Dim}Create a new skill{Reset}");
+        Term.OutLine($"  {Dim}${Reset} {Text}skills experimental_sync{Reset}    {Dim}Sync skills from node_modules{Reset}");
+        Term.OutLine();
+        Term.OutLine($"{Dim}try:{Reset} skills add vercel-labs/agent-skills");
+        Term.OutLine();
+        Term.OutLine($"Discover more skills at {Text}https://skills.sh/{Reset}");
+        Term.OutLine();
     }
 
     private static void ShowHelp()
     {
         const string b = Bold, d = Dim, r = Reset, t = Text;
-        Sys.OutLine("\n" + $$"""
+        Term.OutLine("\n" + $$"""
             {{b}}Usage:{{r}} skills <command> [options]
 
             {{b}}Manage Skills:{{r}}
@@ -190,7 +190,7 @@ internal static class Program
     private static void ShowRemoveHelp()
     {
         const string b = Bold, d = Dim, r = Reset, t = Text;
-        Sys.OutLine("\n" + $$"""
+        Term.OutLine("\n" + $$"""
             {{b}}Usage:{{r}} skills remove [skills...] [options]
 
             {{b}}Description:{{r}}
@@ -231,7 +231,7 @@ internal static class Program
 
         if (Fs.Exists(skillFile))
         {
-            Sys.OutLine($"{Text}Skill already exists at {Dim}{display}{Reset}");
+            Term.OutLine($"{Text}Skill already exists at {Dim}{display}{Reset}");
             return;
         }
         try
@@ -242,24 +242,24 @@ internal static class Program
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            Sys.ErrLine(e.Message);
-            Sys.Exit(1);
+            Term.ErrLine(e.Message);
+            Term.Exit(1);
         }
-        Sys.OutLine($"{Text}Initialized skill: {Dim}{skillName}{Reset}");
-        Sys.OutLine();
-        Sys.OutLine($"{Dim}Created:{Reset}");
-        Sys.OutLine($"  {display}");
-        Sys.OutLine();
-        Sys.OutLine($"{Dim}Next steps:{Reset}");
-        Sys.OutLine($"  1. Edit {Text}{display}{Reset} to define your skill instructions");
-        Sys.OutLine($"  2. Update the {Text}name{Reset} and {Text}description{Reset} in the frontmatter");
-        Sys.OutLine();
-        Sys.OutLine($"{Dim}Publishing:{Reset}");
-        Sys.OutLine($"  {Dim}GitHub:{Reset}  Push to a repo, then {Text}skills add <owner>/<repo>{Reset}");
-        Sys.OutLine($"  {Dim}URL:{Reset}     Host the file, then {Text}skills add https://example.com/{display}{Reset}");
-        Sys.OutLine();
-        Sys.OutLine($"Browse existing skills for inspiration at {Text}https://skills.sh/{Reset}");
-        Sys.OutLine();
+        Term.OutLine($"{Text}Initialized skill: {Dim}{skillName}{Reset}");
+        Term.OutLine();
+        Term.OutLine($"{Dim}Created:{Reset}");
+        Term.OutLine($"  {display}");
+        Term.OutLine();
+        Term.OutLine($"{Dim}Next steps:{Reset}");
+        Term.OutLine($"  1. Edit {Text}{display}{Reset} to define your skill instructions");
+        Term.OutLine($"  2. Update the {Text}name{Reset} and {Text}description{Reset} in the frontmatter");
+        Term.OutLine();
+        Term.OutLine($"{Dim}Publishing:{Reset}");
+        Term.OutLine($"  {Dim}GitHub:{Reset}  Push to a repo, then {Text}skills add <owner>/<repo>{Reset}");
+        Term.OutLine($"  {Dim}URL:{Reset}     Host the file, then {Text}skills add https://example.com/{display}{Reset}");
+        Term.OutLine();
+        Term.OutLine($"Browse existing skills for inspiration at {Text}https://skills.sh/{Reset}");
+        Term.OutLine();
     }
 
     private static void Run(string[] args)
@@ -288,12 +288,12 @@ internal static class Program
         {
             case "find" or "search" or "f" or "s":
                 if (!inAgent) ShowLogo();
-                Sys.OutLine();
+                Term.OutLine();
                 FindCommand.Run(rest);
                 break;
             case "init":
                 if (!inAgent) ShowLogo();
-                Sys.OutLine();
+                Term.OutLine();
                 RunInit(rest);
                 break;
             case "experimental_install":
@@ -306,9 +306,9 @@ internal static class Program
                 if (!inAgent && !opts.Json) ShowLogo();
                 if (errors.Count > 0)
                 {
-                    foreach (var e in errors) Sys.ErrLine($"Error: {e}");
-                    if (opts.Json) Sys.OutLine("[]");
-                    Sys.ExitCode = 1;
+                    foreach (var e in errors) Term.ErrLine($"Error: {e}");
+                    if (opts.Json) Term.OutLine("[]");
+                    Term.ExitCode = 1;
                     return;
                 }
                 AddCommand.Run(source, opts);
@@ -346,26 +346,35 @@ internal static class Program
                 ShowHelp();
                 break;
             case "--version" or "-v":
-                Sys.OutLine(Version);
+                Term.OutLine(Version);
                 break;
             default:
-                Sys.OutLine($"Unknown command: {command}");
-                Sys.OutLine($"Run {Bold}skills --help{Reset} for usage.");
-                Sys.ExitCode = 1;
+                Term.OutLine($"Unknown command: {command}");
+                Term.OutLine($"Run {Bold}skills --help{Reset} for usage.");
+                Term.ExitCode = 1;
                 break;
         }
+    }
+
+    /// Point the library core at the terminal: its warnings go to stderr and
+    /// requests identify as the CLI.
+    internal static void ConfigureCore()
+    {
+        Sys.UserAgent = $"skills-cli/{Version}";
+        Sys.WarningSink = Term.ErrLine;
+        Telemetry.SetVersion(Version);
     }
 
     public static int Main(string[] args)
     {
         // Node translates ANSI sequences for the Windows console; enable VT
         // processing so colors and cursor movement render the same way.
-        Sys.EnableVirtualTerminal();
-        Telemetry.SetVersion(Version);
+        Term.EnableVirtualTerminal();
+        ConfigureCore();
         Run(args);
         Telemetry.Flush(TimeSpan.FromSeconds(5));
-        Ui.OnProcessExit(Sys.ExitCode);
+        Ui.OnProcessExit(Term.ExitCode);
         Ui.RestoreTerminal();
-        return Sys.ExitCode;
+        return Term.ExitCode;
     }
 }

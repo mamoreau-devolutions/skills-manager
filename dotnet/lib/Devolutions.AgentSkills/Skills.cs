@@ -39,7 +39,7 @@ internal static partial class SkillDiscovery
     public static bool HasSkillMd(string dir) => Fs.IsFile(NodePath.Join(dir, "SKILL.md"));
 
     private static void WarnSkipped(string path, string reason) =>
-        Sys.ErrLine($"⚠ Skipped {Sanitize.Metadata(path)} — {Sanitize.StripTerminalEscapes(reason)}");
+        Sys.Warn($"⚠ Skipped {Sanitize.Metadata(path)} — {Sanitize.StripTerminalEscapes(reason)}");
 
     /// readFile(path, 'utf-8'): invalid UTF-8 becomes U+FFFD; a BOM is kept.
     public static string ReadUtf8(string path) => new UTF8Encoding(false).GetString(File.ReadAllBytes(path));

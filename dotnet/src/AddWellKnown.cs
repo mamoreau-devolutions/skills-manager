@@ -20,7 +20,7 @@ internal static partial class AddCommand
         {
             spinner.Stop(Pc.Red("No matching skills"));
             Ui.Log.Error(e.Message);
-            Sys.Exit(1);
+            Term.Exit(1);
             return false;
         }
         if (skills.Count == 0)
@@ -39,7 +39,7 @@ internal static partial class AddCommand
 
         if (options.List)
         {
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Log.Step(Pc.Bold("Available Skills"));
             foreach (var s in skills)
             {
@@ -47,9 +47,9 @@ internal static partial class AddCommand
                 Ui.Log.Message($"    {Pc.Dim(s.Description)}");
                 if (s.Files.Count > 1) Ui.Log.Message($"    {Pc.Dim($"Files: {s.Files.Count}")}");
             }
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Outro("Run without --list to install");
-            Sys.Exit(0);
+            Term.Exit(0);
         }
 
         void LogChosen(List<WellKnownSkill> chosen) => LogAutoSelectedSkills(chosen.Select(s => (s.InstallName, s.Description)).ToList());
@@ -68,7 +68,7 @@ internal static partial class AddCommand
                 Ui.Log.Error($"No matching skills found for: {string.Join(", ", names)}");
                 Ui.Log.Info("Available skills:");
                 foreach (var s in skills) Ui.Log.Message($"  - {s.InstallName}");
-                Sys.Exit(1);
+                Term.Exit(1);
             }
         }
         else if (skills.Count == 1 || options.Yes)
@@ -123,7 +123,7 @@ internal static partial class AddCommand
             var overwrites = targetAgents.Where(a => Installer.IsSkillInstalled(s.InstallName, a, installGlobally)).Select(a => Agents.Get(a).DisplayName).ToList();
             if (overwrites.Count > 0) summary.Add($"  {Pc.Yellow("overwrites:")} {FormatList(overwrites, 5)}");
         }
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Note(string.Join("\n", summary), "Installation Summary");
 
         if (!options.Yes && Ui.Confirm("Proceed with installation?") != true) ExitInstallationCancelled();
@@ -138,7 +138,7 @@ internal static partial class AddCommand
                 results.Add(new AddResult(s.InstallName, Agents.Get(a).DisplayName, null,
                     Installer.InstallWellKnownSkillForAgent(s.InstallName, s.Files, a, new InstallOptions { Global = installGlobally, Mode = mode })));
         spinner.Stop("Installation complete");
-        Sys.OutLine();
+        Term.OutLine();
 
         var successful = results.Where(r => r.R.Success).ToList();
         var failed = results.Where(r => !r.R.Success).ToList();
@@ -161,45 +161,18 @@ internal static partial class AddCommand
                 ("sourceType", "well-known"));
         }
 
-        if (successful.Count > 0 && installGlobally)
+        if (successful.Count > 0)
         {
-            foreach (var s in selected.Where(s => okNames.Contains(s.InstallName)))
-            {
-                TryAddToGlobalLock(s.InstallName, new JsonObject
-                {
-                    ["source"] = sourceIdentifier,
-                    ["sourceType"] = "well-known",
-                    ["sourceUrl"] = s.SourceUrl,
-                    ["skillFolderHash"] = "",
-                    ["sourceBaseUrl"] = url,
-                    ["wellKnownDigest"] = WellKnown.ComputeSkillDigest(s),
-                });
-            }
-        }
-
-        if (successful.Count > 0 && !installGlobally)
-        {
-            foreach (var s in selected.Where(s => okNames.Contains(s.InstallName)))
-            {
-                var m = successful.FirstOrDefault(r => r.Skill == s.InstallName);
-                if (m == null) continue;
-                var dir = !string.IsNullOrEmpty(m.R.CanonicalPath) ? m.R.CanonicalPath : m.R.Path;
-                if (dir.Length == 0 || TryComputeHash(dir) is not { } hash) continue;
-                TryAddToLocalLock(s.InstallName, new JsonObject
-                {
-                    ["source"] = sourceIdentifier,
-                    ["sourceUrl"] = url,
-                    ["sourceType"] = "well-known",
-                    ["computedHash"] = hash,
-                    ["wellKnownDigest"] = WellKnown.ComputeSkillDigest(s),
-                }, cwd);
-            }
+            var installedDirs = new Dictionary<string, string>();
+            foreach (var r in successful)
+                if (!installedDirs.ContainsKey(r.Skill)) installedDirs[r.Skill] = !string.IsNullOrEmpty(r.R.CanonicalPath) ? r.R.CanonicalPath : r.R.Path;
+            InstallRecords.RecordWellKnownSkills(url, selected.Where(s => okNames.Contains(s.InstallName)), installedDirs, installGlobally, cwd);
         }
 
         if (successful.Count > 0) PrintInstalledNote(successful, targetAgents, cwd);
         PrintFailures(failed);
 
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Outro(DoneOutro());
         PromptForFindSkills(options, targetAgents);
         return true;
@@ -217,46 +190,10 @@ internal static partial class AddCommand
         }
     }
 
-    private static string? TryComputeHash(string dir)
-    {
-        try
-        {
-            return LocalLock.ComputeSkillFolderHash(dir);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
-    }
-
-    private static void TryAddToGlobalLock(string name, JsonObject entry)
-    {
-        try
-        {
-            SkillLock.AddSkill(name, entry);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            // best effort
-        }
-    }
-
-    private static void TryAddToLocalLock(string name, JsonObject entry, string cwd)
-    {
-        try
-        {
-            LocalLock.AddSkill(name, entry, cwd);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            // best effort
-        }
-    }
-
     private static void PrintFailures(List<AddResult> failed)
     {
         if (failed.Count == 0) return;
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Log.Error(Pc.Red($"Failed to install {failed.Count}"));
         foreach (var r in failed) Ui.Log.Message($"  {Pc.Red("✗")} {r.Skill} → {r.Agent}: {Pc.Dim(r.R.Error ?? "")}");
     }

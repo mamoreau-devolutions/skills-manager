@@ -1,12 +1,13 @@
-// Process-level helpers: environment, home/temp directories, output routing and
-// exit handling that mirror Node's `process` / `os` behavior.
+// Terminal I/O for the CLI: stdout/stderr routing, exit handling that mirrors
+// Node's `process.exit`, TTY detection and Windows console VT mode. Environment
+// and directory helpers live in the library's `Sys`.
 
 using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Skills;
 
-internal static partial class Sys
+internal static partial class Term
 {
     private static readonly object OutLock = new();
     private static volatile bool _redirectStdout;
@@ -114,77 +115,6 @@ internal static partial class Sys
         throw new InvalidOperationException("unreachable");
     }
 
-    // ─── Environment ───
-
-    /// `process.env.NAME` when set and non-empty (JS truthiness).
-    public static string? Env(string name)
-    {
-        var v = Environment.GetEnvironmentVariable(name);
-        return string.IsNullOrEmpty(v) ? null : v;
-    }
-
-    /// `process.env.NAME`, even if empty.
-    public static string? EnvRaw(string name) => Environment.GetEnvironmentVariable(name);
-
-    public static bool EnvTruthy(string name) => Env(name) != null;
-
-    /// `process.env.NAME?.trim() || fallback`
-    public static string? EnvTrimmed(string name)
-    {
-        var v = EnvRaw(name)?.Trim();
-        return string.IsNullOrEmpty(v) ? null : v;
-    }
-
-    public static string Cwd() => Directory.GetCurrentDirectory();
-
-    /// `os.homedir()` (libuv `uv_os_homedir`).
-    public static string HomeDir()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            var p = Env("USERPROFILE");
-            if (p != null) return p;
-            var d = Env("HOMEDRIVE");
-            var hp = Env("HOMEPATH");
-            if (d != null && hp != null) return d + hp;
-            return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
-        return Env("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    }
-
-    /// `os.tmpdir()`
-    public static string TmpDir()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            var p = Env("TEMP") ?? Env("TMP") ?? ((Env("SystemRoot") ?? Env("windir") ?? "C:\\Windows") + "\\temp");
-            if (p.Length > 1 && p.EndsWith('\\') && !p.EndsWith(":\\")) p = p[..^1];
-            return p;
-        }
-        var t = Env("TMPDIR") ?? Env("TMP") ?? Env("TEMP") ?? "/tmp";
-        if (t.Length > 1 && t.EndsWith('/')) t = t[..^1];
-        return t;
-    }
-
-    private const string TempChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
-    /// `fs.mkdtemp(join(tmpdir(), prefix))`
-    public static string MkdTemp(string prefix)
-    {
-        var baseDir = TmpDir();
-        Directory.CreateDirectory(baseDir);
-        for (var attempt = 0; attempt < 100; attempt++)
-        {
-            var suffix = new char[6];
-            for (var i = 0; i < 6; i++) suffix[i] = TempChars[Random.Shared.Next(TempChars.Length)];
-            var dir = NodePath.Join(baseDir, prefix + new string(suffix));
-            if (Directory.Exists(dir) || File.Exists(dir)) continue;
-            Directory.CreateDirectory(dir);
-            return dir;
-        }
-        throw new IOException("failed to create temp dir");
-    }
-
     public static bool StdinIsTty() => !Console.IsInputRedirected;
 
     public static bool StdoutIsTty() => !Console.IsOutputRedirected;
@@ -217,8 +147,6 @@ internal static partial class Sys
         }
     }
 
-    /// `new Date().toISOString()`
-    public static string NowIso() => DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     /// Enable ANSI escape processing on the Windows console (Node's libuv
     /// translates escapes itself, so output must render the same way).

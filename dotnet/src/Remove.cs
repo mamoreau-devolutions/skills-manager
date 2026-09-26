@@ -12,20 +12,8 @@ internal sealed class RemoveOptions
 
 internal static class RemoveCommand
 {
-    /// Resolve requested names to canonical removal targets, preferring lock keys.
-    public static List<string> ResolveSkillsToRemove(IEnumerable<string> requested, IEnumerable<string> folderNames, IEnumerable<string> lockKeys)
-    {
-        var identity = new Dictionary<string, string>();
-        foreach (var f in folderNames) identity[Installer.SanitizeName(f)] = f;
-        foreach (var k in lockKeys) identity[Installer.SanitizeName(k)] = k;
-        var matched = new List<string>();
-        foreach (var name in requested)
-            if (identity.TryGetValue(Installer.SanitizeName(name), out var hit) && !matched.Contains(hit))
-                matched.Add(hit);
-        return matched;
-    }
-
-    private sealed record Result(string Skill, bool Success, string Source, string SourceType, string? Error);
+    public static List<string> ResolveSkillsToRemove(IEnumerable<string> requested, IEnumerable<string> folderNames, IEnumerable<string> lockKeys) =>
+        Removal.ResolveSkillsToRemove(requested, folderNames, lockKeys);
 
     public static void Run(List<string> skillNames, RemoveOptions options)
     {
@@ -47,7 +35,7 @@ internal static class RemoveCommand
             Ui.Log.Error("Cannot combine --all with specific skill names.");
             Ui.Log.Info("Use `skills remove --all` to remove every skill, or omit --all to remove only the named skills.");
             Ui.Log.Info($"Example: skills remove {skillNames[0]} -y");
-            Sys.Exit(1);
+            Term.Exit(1);
         }
 
         var isGlobal = options.Global;
@@ -55,45 +43,7 @@ internal static class RemoveCommand
         var spinner = new Ui.Spinner();
         spinner.Start("Scanning for installed skills…");
 
-        var found = new List<string>();
-        void ScanDir(string dir)
-        {
-            List<DirEntry> entries;
-            try
-            {
-                entries = Fs.ReadDir(dir);
-            }
-            catch (Exception e) when (e is DirectoryNotFoundException or FileNotFoundException)
-            {
-                return;
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                Ui.Log.Warn($"Could not scan directory {dir}: {e.Message}");
-                return;
-            }
-            foreach (var e in entries)
-            {
-                if (!e.IsDirectory || e.Name.StartsWith('.')) continue;
-                if (!SkillDiscovery.HasSkillMd(e.FullPath)) continue;
-                if (!found.Contains(e.Name)) found.Add(e.Name);
-            }
-        }
-
-        if (isGlobal)
-        {
-            ScanDir(Installer.GetCanonicalSkillsDir(true, cwd));
-            foreach (var a in Agents.List)
-                if (a.GlobalSkillsDir != null) ScanDir(a.GlobalSkillsDir);
-        }
-        else
-        {
-            ScanDir(Installer.GetCanonicalSkillsDir(false, cwd));
-            foreach (var a in Agents.List) ScanDir(NodePath.Join(cwd, a.SkillsDir));
-            foreach (var sub in Agents.GetEveSubagents(cwd)) ScanDir(Installer.GetEveSubagentSkillsDir(sub, cwd));
-        }
-
-        var installed = Collate.StableSort(found, string.CompareOrdinal);
+        var installed = Removal.ScanInstalled(isGlobal, cwd, Ui.Log.Warn);
         spinner.Stop($"Found {installed.Count} unique installed skill(s)");
 
         var lockKeys = (isGlobal ? SkillLock.Read().Skills : LocalLock.Read(cwd).Skills).Select(kv => kv.Key).ToList();
@@ -114,7 +64,7 @@ internal static class RemoveCommand
             {
                 Ui.Log.Error($"Invalid agents: {string.Join(", ", invalid)}");
                 Ui.Log.Info($"Valid agents: {string.Join(", ", Agents.AllNames())}");
-                Sys.Exit(1);
+                Term.Exit(1);
             }
         }
 
@@ -139,7 +89,7 @@ internal static class RemoveCommand
             if (chosen == null)
             {
                 Ui.Cancel("Removal cancelled");
-                Sys.Exit(0);
+                Term.Exit(0);
             }
             selected = ResolveSkillsToRemove(chosen, installed, lockKeys);
         }
@@ -157,78 +107,21 @@ internal static class RemoveCommand
 
         if (!options.Yes)
         {
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Log.Info("Skills to remove:");
             foreach (var s in selected) Ui.Log.Message($"  {Pc.Red("•")} {s}");
-            Sys.OutLine();
+            Term.OutLine();
             if (Ui.Confirm($"Are you sure you want to uninstall {selected.Count} skill(s)?") != true)
             {
                 Ui.Cancel("Removal cancelled");
-                Sys.Exit(0);
+                Term.Exit(0);
             }
         }
 
         spinner.Start("Removing skills…");
 
-        var results = new List<Result>();
-        foreach (var skillName in selected)
-        {
-            try
-            {
-                var canonical = Installer.GetCanonicalPath(skillName, isGlobal, cwd);
-                foreach (var at in targetAgents)
-                {
-                    var a = Agents.Get(at);
-                    var skillPath = Installer.GetInstallPath(skillName, at, isGlobal, cwd);
-                    var sanitized = Installer.SanitizeName(skillName);
-                    var cleanup = new List<string> { skillPath };
-                    void Add(string p)
-                    {
-                        if (!cleanup.Contains(p)) cleanup.Add(p);
-                    }
-                    if (isGlobal && a.GlobalSkillsDir != null)
-                    {
-                        Add(NodePath.Join(a.GlobalSkillsDir, sanitized));
-                    }
-                    else
-                    {
-                        Add(NodePath.Join(cwd, a.SkillsDir, sanitized));
-                        if (at == "eve")
-                            foreach (var sub in Agents.GetEveSubagents(cwd)) Add(NodePath.Join(Installer.GetEveSubagentSkillsDir(sub, cwd), sanitized));
-                    }
-                    foreach (var p in cleanup)
-                    {
-                        if (p == canonical || !Fs.LExists(p)) continue;
-                        try
-                        {
-                            Fs.RemoveAll(p);
-                        }
-                        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-                        {
-                            Ui.Log.Warn($"Could not remove skill from {a.DisplayName}: {e.Message}");
-                        }
-                    }
-                }
-
-                var remaining = Agents.DetectInstalledAgents().Where(a => !targetAgents.Contains(a));
-                var stillUsed = remaining.Any(at => Fs.LExists(Installer.GetInstallPath(skillName, at, isGlobal, cwd)));
-                if (!stillUsed) Fs.RemoveAll(canonical);
-
-                var entry = isGlobal ? SkillLock.GetSkill(skillName) : LocalLock.Read(cwd).Skills[skillName];
-                var source = Json.NonEmpty(entry, "source") ?? "local";
-                var sourceType = Json.NonEmpty(entry, "sourceType") ?? "local";
-                if (!stillUsed)
-                {
-                    if (isGlobal) SkillLock.RemoveSkill(skillName);
-                    else LocalLock.RemoveSkill(skillName, cwd);
-                }
-                results.Add(new Result(skillName, true, source, sourceType, null));
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
-            {
-                results.Add(new Result(skillName, false, "", "", e.Message));
-            }
-        }
+        var results = new List<RemoveOutcome>();
+        foreach (var skillName in selected) results.Add(Removal.RemoveSkill(skillName, targetAgents, isGlobal, cwd, Ui.Log.Warn));
 
         spinner.Stop("Removal process complete");
 
@@ -269,7 +162,7 @@ internal static class RemoveCommand
             Ui.Log.Error(Pc.Red($"Failed to remove {failed.Count} skill(s)"));
             foreach (var r in failed) Ui.Log.Message($"  {Pc.Red("✗")} {r.Skill}: {r.Error}");
         }
-        Sys.OutLine();
+        Term.OutLine();
         Ui.Outro(Pc.Green("Done!"));
     }
 

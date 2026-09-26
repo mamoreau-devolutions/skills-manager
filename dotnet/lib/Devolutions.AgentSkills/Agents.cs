@@ -34,7 +34,7 @@ internal static class Agents
         public string? ZedFlatpakConfig;
     }
 
-    private static readonly Lazy<Homes> H = new(() =>
+    private static Homes BuildHomes()
     {
         var home = Sys.HomeDir();
         string Or(string v, string dir) => Sys.EnvTrimmed(v) ?? NodePath.Join(home, dir);
@@ -52,13 +52,32 @@ internal static class Agents
             ZedAppData = Sys.EnvTrimmed("APPDATA"),
             ZedFlatpakConfig = Sys.EnvTrimmed("FLATPAK_XDG_CONFIG_HOME"),
         };
-    });
+    }
 
-    public static string Home => H.Value.Home;
+    /// Home directories and the agent table built from them. The CLI builds it
+    /// once per process; a public API call builds it once per call, so a
+    /// long-running host sees environment and home changes.
+    private sealed record State(Homes H, List<AgentConfig> All);
+
+    private static readonly Lazy<State> ProcessState = new(BuildState);
+
+    private static State Current => Sys.Context is { } c
+        ? (State)LazyInitializer.EnsureInitialized(ref c.AgentsCache, BuildState)
+        : ProcessState.Value;
+
+    private static State BuildState()
+    {
+        var h = BuildHomes();
+        return new State(h, BuildAgents(h));
+    }
+
+    private static Homes H => Current.H;
+
+    public static string Home => H.Home;
 
     private static bool Exists(string p) => Directory.Exists(p) || File.Exists(p);
-    private static string Hm(string rel) => NodePath.Join(H.Value.Home, rel);
-    private static string Cfg(string rel) => NodePath.Join(H.Value.ConfigHome, rel);
+    private static string Hm(string rel) => NodePath.Join(H.Home, rel);
+    private static string Cfg(string rel) => NodePath.Join(H.ConfigHome, rel);
     private static string CwdPath(string rel) => NodePath.Join(Sys.Cwd(), rel);
 
     public static string GetOpenClawGlobalSkillsDir(string homeDir, Func<string, bool> pathExists)
@@ -95,9 +114,10 @@ internal static class Agents
         }
     }
 
-    private static readonly Lazy<List<AgentConfig>> All = new(() =>
+    private static List<AgentConfig> BuildAgents(Homes h)
     {
-        var h = H.Value;
+        string Hm(string rel) => NodePath.Join(h.Home, rel);
+        string Cfg(string rel) => NodePath.Join(h.ConfigHome, rel);
         return
         [
             new("aider-desk", "AiderDesk", ".aider-desk/skills", Hm(".aider-desk/skills")),
@@ -180,21 +200,21 @@ internal static class Agents
             new("adal", "AdaL", ".adal/skills", Hm(".adal/skills")),
             new("universal", "Universal", ".agents/skills", Cfg("agents/skills"), ShowInUniversalList: false),
         ];
-    });
+    }
 
-    public static IReadOnlyList<AgentConfig> List => All.Value;
+    public static IReadOnlyList<AgentConfig> List => Current.All;
 
-    public static AgentConfig? Find(string name) => All.Value.FirstOrDefault(a => a.Name == name);
+    public static AgentConfig? Find(string name) => Current.All.FirstOrDefault(a => a.Name == name);
 
     /// An agent known to exist.
     public static AgentConfig Get(string name) => Find(name) ?? throw new ArgumentException($"unknown agent: {name}");
 
-    public static List<string> AllNames() => All.Value.Select(a => a.Name).ToList();
+    public static List<string> AllNames() => Current.All.Select(a => a.Name).ToList();
 
     /// `config.detectInstalled()`
     public static bool DetectInstalled(string name)
     {
-        var h = H.Value;
+        var h = H;
         return name switch
         {
             "aider-desk" => Exists(Hm(".aider-desk")),
@@ -280,7 +300,7 @@ internal static class Agents
         };
     }
 
-    public static List<string> DetectInstalledAgents() => All.Value.Where(a => DetectInstalled(a.Name)).Select(a => a.Name).ToList();
+    public static List<string> DetectInstalledAgents() => Current.All.Where(a => DetectInstalled(a.Name)).Select(a => a.Name).ToList();
 
     /// `join('agent', 'subagents')`
     public static string EveSubagentsDir => NodePath.Join("agent", "subagents");
@@ -303,13 +323,13 @@ internal static class Agents
     }
 
     public static List<string> GetUniversalAgents() =>
-        All.Value.Where(a => a.SkillsDir == ".agents/skills" && a.ShowInUniversalList).Select(a => a.Name).ToList();
+        Current.All.Where(a => a.SkillsDir == ".agents/skills" && a.ShowInUniversalList).Select(a => a.Name).ToList();
 
     public static List<string> GetVisibleUniversalAgents() =>
-        All.Value.Where(a => a.SkillsDir == ".agents/skills" && a.ShowInUniversalList && a.ShowInUniversalPrompt).Select(a => a.Name).ToList();
+        Current.All.Where(a => a.SkillsDir == ".agents/skills" && a.ShowInUniversalList && a.ShowInUniversalPrompt).Select(a => a.Name).ToList();
 
     public static List<string> GetNonUniversalAgents() =>
-        All.Value.Where(a => a.SkillsDir != ".agents/skills").Select(a => a.Name).ToList();
+        Current.All.Where(a => a.SkillsDir != ".agents/skills").Select(a => a.Name).ToList();
 
     public static bool IsUniversalAgent(string name) => Find(name)?.SkillsDir == ".agents/skills";
 }

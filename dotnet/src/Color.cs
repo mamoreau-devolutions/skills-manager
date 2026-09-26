@@ -25,7 +25,7 @@ internal static class Pc
         var force = Sys.EnvTruthy("FORCE_COLOR")
             || argv.Contains("--color")
             || OperatingSystem.IsWindows()
-            || (Sys.StdoutIsTty() && Environment.GetEnvironmentVariable("TERM") != "dumb")
+            || (Term.StdoutIsTty() && Environment.GetEnvironmentVariable("TERM") != "dumb")
             || Sys.EnvTruthy("CI");
         return !noColor && force;
     });
@@ -80,7 +80,7 @@ internal static class Style
     {
         var force = Environment.GetEnvironmentVariable("FORCE_COLOR");
         if (force != null) return force != "0" && force != "false";
-        return Sys.StdoutIsTty()
+        return Term.StdoutIsTty()
             && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))
             && Environment.GetEnvironmentVariable("TERM") != "dumb";
     });

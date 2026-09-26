@@ -11,6 +11,7 @@
          the reference CLI's package.json when SKILLS_REFERENCE is set). -->
     <Version>1.7.0</Version>
     <Description>The open agent skills ecosystem (C# port of the skills CLI)</Description>
+    <IsPackable>false</IsPackable>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Run the trim, AOT and single-file analyzers on every build. With
@@ -43,6 +44,9 @@
        clang or gcc on Linux, Xcode on macOS) and builds only for the host OS. -->
 
   <ItemGroup>
+    <!-- The core (agents, installer, lock files, sources) is the NuGet library;
+         the CLI adds the terminal UI and command flows on its internals. -->
+    <ProjectReference Include="..\lib\Devolutions.AgentSkills\Devolutions.AgentSkills.csproj" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 

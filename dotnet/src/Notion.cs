@@ -58,7 +58,7 @@ internal static partial class Notion
 
     private static string RunNtn(params string[] args)
     {
-        if (Sys.EnvRaw("SKILLS_DEBUG") == "1") Sys.ErrLine($"[notion] ntn {string.Join(" ", args)}");
+        if (Sys.EnvRaw("SKILLS_DEBUG") == "1") Term.ErrLine($"[notion] ntn {string.Join(" ", args)}");
         ProcOutput output;
         try
         {
@@ -252,7 +252,7 @@ internal static partial class Notion
 
         if (list)
         {
-            Sys.OutLine();
+            Term.OutLine();
             Ui.Log.Step(Pc.Bold("Available Notion packs"));
             foreach (var p in SortedPacks(packs))
             {
@@ -279,7 +279,7 @@ internal static partial class Notion
             if (chosen.Count == 0) throw new NotionException($"No matching Notion packs found for: {string.Join(", ", sel)}");
             selected = chosen;
         }
-        else if (yes || !Sys.StdinIsTty())
+        else if (yes || !Term.StdinIsTty())
         {
             selected = packs;
         }
