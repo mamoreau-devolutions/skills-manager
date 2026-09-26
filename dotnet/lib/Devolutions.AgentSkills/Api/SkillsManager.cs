@@ -46,8 +46,9 @@ public sealed partial class SkillsManager
     public SkillsManager(SkillsManagerOptions? options = null)
     {
         _options = options ?? new SkillsManagerOptions();
-        ProjectDirectory = Path.GetFullPath(_options.ProjectDirectory ?? Environment.CurrentDirectory);
-        _home = _options.HomeDirectory is { } home ? Path.GetFullPath(home) : null;
+        ProjectDirectory = NodePath.Resolve(_options.ProjectDirectory ?? Environment.CurrentDirectory);
+        // path.resolve semantics, like the CLI: no 8.3 short-name expansion (C:\Users\RUNNER~1 stays as given).
+        _home = _options.HomeDirectory is { } home ? NodePath.Resolve(home) : null;
         if (!string.IsNullOrEmpty(_options.GitHubToken)) _env = new Dictionary<string, string?> { ["GITHUB_TOKEN"] = _options.GitHubToken };
     }
 

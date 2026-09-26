@@ -238,6 +238,30 @@ public sealed class SkillsManagerTests : IDisposable
         Assert.True(Directory.Exists(other.Join("home", ".agents", "skills", "beta")));
     }
 
+    /// Directories keep the form the caller gave (path.resolve semantics, as in
+    /// the CLI): an 8.3 short name such as C:\Users\RUNNER~1 is not expanded.
+    [Fact]
+    public void ShortNamePathsAreKeptAsGiven()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var longDir = NodePath.Join(_root.Path, "a-long-directory-name");
+        Directory.CreateDirectory(longDir);
+        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c for %I in (\"{longDir}\") do @echo %~sI")
+        {
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        var shortDir = p.StandardOutput.ReadToEnd().Trim();
+        p.WaitForExit();
+        if (shortDir.Length == 0 || shortDir.Equals(longDir, StringComparison.OrdinalIgnoreCase)) return; // 8.3 names disabled
+
+        var m = new SkillsManager(new SkillsManagerOptions { HomeDirectory = shortDir, ProjectDirectory = shortDir });
+        Assert.Equal(shortDir, m.ProjectDirectory);
+        Assert.Equal(NodePath.Join(shortDir, ".claude", "skills"), m.GetAgents().Single(a => a.Id == "claude-code").GlobalSkillsDirectory);
+    }
+
     [Fact]
     public void VersionMatchesThePackage()
     {
